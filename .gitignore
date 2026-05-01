@@ -1,0 +1,23 @@
+# Python 가상환경
+venv/
+
+# 입력 영상 (클라이언트 자료 보안)
+input/*
+!input/.gitkeep
+
+# 추출 결과물 (클라이언트 자료 보안)
+output/*
+!output/.gitkeep
+
+# Python 캐시
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# VSCode 개인 설정
+.vscode/
+
+# Claude Code 로컬 설정
+.claude/
