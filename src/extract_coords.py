@@ -11,6 +11,7 @@
 """
 
 import cv2
+import math
 import numpy as np
 import json
 import sys
@@ -32,6 +33,15 @@ MIN_COMPONENT_AREA = 20
 
 # scale 이동평균 윈도우 크기
 SCALE_SMOOTH_WINDOW = 5
+
+# 원형 판정 aspect ratio 범위 (w/h 가 이 범위 안이면 원형으로 간주)
+CIRCLE_ASPECT_RATIO_MIN = 0.85
+CIRCLE_ASPECT_RATIO_MAX = 1.15
+
+# 회전 wrap-around 보정 임계값 (도)
+# w≥h 정규화 후 각도 범위가 [-90, 90)이 되어
+# 한 바퀴 경계에서 ±178° 수준의 점프가 발생 → ±90 기준으로 보정
+ROTATION_WRAP_THRESHOLD = 90.0
 
 # 수동 지정용 색 이름 → HSV 범위 매핑 테이블
 COLOR_HSV_MAP: Dict[str, Tuple[List[int], List[int]]] = {
@@ -125,6 +135,97 @@ def find_largest_component(
     return cx, cy, w, h, area
 
 
+# ── 회전 계산 ────────────────────────────────────────────────────
+
+def calc_raw_rotation(mask: np.ndarray) -> Optional[Tuple[float, bool]]:
+    """
+    마스크에서 가장 큰 컨투어에 cv2.minAreaRect를 적용해
+    (raw_angle, is_circular)를 반환한다.
+
+    장축이 항상 w가 되도록 정규화하면 각도 범위가 [-90, 90)이 된다.
+    이 범위에서 원 한 바퀴 회전 시 ±178° 점프가 발생하고,
+    ROTATION_WRAP_THRESHOLD(90°) 초과 여부로 감지·보정한다.
+    컨투어가 없거나 너무 작으면 None 반환.
+    """
+    contours, _ = cv2.findContours(
+        mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    if not contours:
+        return None
+
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) < MIN_COMPONENT_AREA:
+        return None
+
+    (_, _), (w, h), angle = cv2.minAreaRect(largest)
+
+    # 장축이 항상 w가 되도록 정규화 → 각도 범위 [-90, 90)
+    if w < h:
+        w, h = h, w
+        angle += 90.0
+
+    aspect_ratio = w / h if h > 0 else 1.0
+    is_circular = CIRCLE_ASPECT_RATIO_MIN <= aspect_ratio <= CIRCLE_ASPECT_RATIO_MAX
+    return angle, is_circular
+
+
+def accumulate_rotations_from_ref(
+    raw_angles: List[Optional[float]],
+    ref_idx: int,
+) -> List[Optional[float]]:
+    """
+    기준 프레임(ref_idx)을 0°로 하여 전후 프레임의 누적 회전 각도를 계산한다.
+
+    순방향(ref_idx → 끝)과 역방향(ref_idx → 처음)으로 각각 누적하므로
+    객체가 화면 밖에서 진입하는 영상도 올바른 기준으로 정규화된다.
+    기준 프레임의 raw_angle이 없으면 None 리스트를 반환한다.
+    """
+    n = len(raw_angles)
+    result: List[Optional[float]] = [None] * n
+
+    ref_angle = raw_angles[ref_idx]
+    if ref_angle is None:
+        return result
+
+    result[ref_idx] = 0.0
+
+    # 순방향: ref_idx+1 → 끝
+    accumulated = 0.0
+    prev_raw = ref_angle
+    for i in range(ref_idx + 1, n):
+        angle = raw_angles[i]
+        if angle is None:
+            continue
+        diff = angle - prev_raw
+        if diff > ROTATION_WRAP_THRESHOLD:
+            diff -= 180.0
+        elif diff < -ROTATION_WRAP_THRESHOLD:
+            diff += 180.0
+        accumulated += diff
+        prev_raw = angle
+        result[i] = round(accumulated, 1)
+
+    # 역방향: ref_idx-1 → 0
+    # diff_forward: 프레임 i → i+1 방향의 변화량 = prev_raw(=i+1) - angle(=i)
+    # 역방향 누적이므로 diff_forward를 뺀다
+    accumulated = 0.0
+    prev_raw = ref_angle
+    for i in range(ref_idx - 1, -1, -1):
+        angle = raw_angles[i]
+        if angle is None:
+            continue
+        diff_forward = prev_raw - angle
+        if diff_forward > ROTATION_WRAP_THRESHOLD:
+            diff_forward -= 180.0
+        elif diff_forward < -ROTATION_WRAP_THRESHOLD:
+            diff_forward += 180.0
+        accumulated -= diff_forward
+        prev_raw = angle
+        result[i] = round(accumulated, 1)
+
+    return result
+
+
 # ── scale 계산 ────────────────────────────────────────────────────
 
 def smooth_values(
@@ -150,18 +251,23 @@ def smooth_values(
     return result
 
 
-def calc_scales(smoothed_widths: List[Optional[float]]) -> List[Optional[float]]:
+def calc_scales(
+    smoothed_widths: List[Optional[float]],
+    baseline: Optional[float] = None,
+) -> List[Optional[float]]:
     """
-    첫 유효 프레임의 width를 100%로 삼아 각 프레임의 scale(%)을 계산한다.
+    지정된 baseline을 100%로 삼아 각 프레임의 scale(%)을 계산한다.
 
-    기준 width가 0이거나 유효값이 없으면 전부 None 반환.
+    baseline이 None이면 첫 유효 프레임 값을 사용(하위 호환).
+    baseline이 0이거나 유효값이 없으면 전부 None 반환.
     """
-    baseline = next((w for w in smoothed_widths if w is not None), None)
-    if not baseline:
+    actual_baseline = baseline if baseline is not None else \
+        next((w for w in smoothed_widths if w is not None), None)
+    if not actual_baseline:
         return [None] * len(smoothed_widths)
 
     return [
-        round((w / baseline) * 100.0, 1) if w is not None else None
+        round((w / actual_baseline) * 100.0, 1) if w is not None else None
         for w in smoothed_widths
     ]
 
@@ -197,6 +303,47 @@ def save_coords_json(
     output_path.parent.mkdir(exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+# ── 기준 프레임 선택 ──────────────────────────────────────────────
+
+REF_SCAN_FRAMES = 30      # 기준 프레임을 탐색할 앞부분 프레임 수
+AREA_VALID_RATIO = 0.5    # 기준 면적 대비 이 비율 미만이면 rotation 신뢰 불가
+                          # (화면 가장자리에서 잘린 슬리버는 minAreaRect 각도가 왜곡됨)
+
+
+def find_reference_frame(
+    video_path: Path,
+    hsv_lower: np.ndarray,
+    hsv_upper: np.ndarray,
+    color_name: str,
+) -> Tuple[int, float]:
+    """
+    처음 REF_SCAN_FRAMES 프레임 중 객체 면적이 가장 큰 프레임을 기준으로 선택한다.
+
+    객체가 화면 밖에서 진입하는 경우, 첫 프레임은 잘린 조각이라 면적이 작다.
+    가장 큰 면적 = 객체가 화면에 완전히 들어온 상태라고 가정한다.
+    반환: (기준_프레임_인덱스, 기준_픽셀_면적)
+    검출 실패 시 (0, 0.0) 반환.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    best_idx = 0
+    best_area = 0.0
+
+    for i in range(REF_SCAN_FRAMES):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        mask = detect_object_by_hsv(frame, hsv_lower, hsv_upper, color_name)
+        component = find_largest_component(mask)
+        if component is not None:
+            area = float(component[4])
+            if area > best_area:
+                best_area = area
+                best_idx = i
+
+    cap.release()
+    return best_idx, best_area
 
 
 # ── 색상 결정 ─────────────────────────────────────────────────────
@@ -255,12 +402,12 @@ def extract_coords(
     color_name: str,
 ) -> None:
     """
-    영상에서 지정 색상 객체의 좌표·크기를 추출하고 JSON과 디버그 영상을 저장한다.
+    영상에서 지정 색상 객체의 좌표·크기·회전을 추출하고 JSON과 디버그 영상을 저장한다.
 
     처리 흐름:
-        1. 프레임별 객체 검출 (connected components) + 디버그 영상 작성
-        2. bounding box width에 이동평균 적용 (노이즈 완화)
-        3. scale 계산 (첫 유효 프레임 기준 %)
+        1. 프레임별 객체 검출 (connected components + minAreaRect) + 디버그 영상 작성
+        2. 면적 기반 유효 지름으로 scale 계산 (이동평균 포함)
+        3. 원형 여부 판정 → 비원형만 누적 회전 계산
         4. JSON 저장
     """
     stem = video_path.stem
@@ -272,8 +419,13 @@ def extract_coords(
     width, height, fps = info["width"], info["height"], info["fps"]
     total_frames = info["total_frames"]
 
+    # 기준 프레임 선택 (scale·rotation 기준점)
+    ref_idx, ref_area = find_reference_frame(video_path, hsv_lower, hsv_upper, color_name)
+    ref_size = math.sqrt(ref_area / math.pi) * 2.0 if ref_area > 0 else None
+
     print(f"추출 시작: {video_path.name}")
     print(f"  해상도 {width}x{height}, {fps}fps, 총 {total_frames}프레임")
+    print(f"  기준 프레임: {ref_idx} (면적 {int(ref_area)}px²)")
 
     OUTPUT_DIR.mkdir(exist_ok=True)
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -281,6 +433,7 @@ def extract_coords(
 
     # 1단계: 프레임별 원시 검출 결과 수집 + 디버그 영상 작성
     raw_results: List[Optional[Tuple[int, int, int, int, int]]] = []
+    raw_rot_results: List[Optional[Tuple[float, bool]]] = []
 
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
@@ -297,8 +450,12 @@ def extract_coords(
         if component is not None:
             cx, cy, _w, _h, _area = component
             draw_cross_marker(frame, cx, cy)
+            rot_result = calc_raw_rotation(mask)
+        else:
+            rot_result = None
 
         raw_results.append(component)
+        raw_rot_results.append(rot_result)
         writer.write(frame)
 
     cap.release()
@@ -307,32 +464,63 @@ def extract_coords(
     # 2단계: 면적 기반 유효 지름으로 scale 계산
     # bounding box width는 anti-aliasing 경계 픽셀에 따라 흔들리므로
     # √(area/π)×2 (면적 기반 유효 지름)를 사용해 노이즈를 줄인다
-    import math
     raw_sizes: List[Optional[float]] = [
         math.sqrt(r[4] / math.pi) * 2.0 if r is not None else None
         for r in raw_results
     ]
     smoothed_sizes = smooth_values(raw_sizes)
-    scales = calc_scales(smoothed_sizes)
+    scales = calc_scales(smoothed_sizes, baseline=ref_size)
 
-    # 3단계: frames_data 조합
+    # 3단계: 면적이 작은 프레임의 rotation 제외
+    # 기준 면적의 50% 미만 = 객체가 화면 가장자리에 일부만 걸친 상태
+    # 이 경우 minAreaRect의 w/h가 역전되어 각도가 90° 뒤집히므로 제외
+    if ref_area > 0:
+        filtered_rot: List[Optional[Tuple[float, bool]]] = []
+        for comp, rot in zip(raw_results, raw_rot_results):
+            if comp is not None and rot is not None:
+                if comp[4] / ref_area < AREA_VALID_RATIO:
+                    rot = None  # 잘린 조각은 rotation 신뢰 불가
+            filtered_rot.append(rot)
+    else:
+        filtered_rot = raw_rot_results
+
+    # 원형 여부 판정 (과반수 투표)
+    # 단일 프레임 판정은 노이즈에 취약하므로 모든 프레임의 결과를 집계한다.
+    # 50% 이상의 프레임이 원형으로 분류되면 원형 객체로 간주한다.
+    circular_votes = [r[1] for r in filtered_rot if r is not None]
+    if circular_votes:
+        is_circular = (sum(circular_votes) / len(circular_votes)) >= 0.5
+    else:
+        is_circular = True
+
+    if is_circular:
+        print("  원형 객체 감지됨, 회전 추출 생략")
+        rotations: List[Optional[float]] = [
+            0.0 if r is not None else None for r in filtered_rot
+        ]
+    else:
+        raw_angles: List[Optional[float]] = [
+            r[0] if r is not None else None for r in filtered_rot
+        ]
+        rotations = accumulate_rotations_from_ref(raw_angles, ref_idx)
+
+    # 4단계: frames_data 조합
     frames_data: List[dict] = []
     missing_count = 0
 
-    for i, (component, scale) in enumerate(zip(raw_results, scales)):
+    for i, (component, scale, rotation) in enumerate(zip(raw_results, scales, rotations)):
         if component is None:
-            if i < len(raw_results):  # 끊김 없이 순회한 프레임만 기록
-                print(f"  경고: 프레임 {i}에서 객체를 찾지 못했습니다. (x, y = null)")
+            print(f"  경고: 프레임 {i}에서 객체를 찾지 못했습니다. (x, y = null)")
             frames_data.append({
                 "frame": i, "x": None, "y": None,
-                "width": None, "height": None, "scale": None,
+                "width": None, "height": None, "scale": None, "rotation": None,
             })
             missing_count += 1
         else:
             cx, cy, w, h, _area = component
             frames_data.append({
                 "frame": i, "x": cx, "y": cy,
-                "width": w, "height": h, "scale": scale,
+                "width": w, "height": h, "scale": scale, "rotation": rotation,
             })
 
     save_coords_json(json_path, video_path.name, info, frames_data)
@@ -340,6 +528,8 @@ def extract_coords(
     # 결과 출력
     valid_scales = [s for s in scales if s is not None]
     scale_range = (max(valid_scales) - min(valid_scales)) if valid_scales else 0.0
+    valid_rots = [r for r in rotations if r is not None]
+    rot_range = (max(valid_rots) - min(valid_rots)) if valid_rots else 0.0
 
     print(f"\n완료!")
     print(f"  좌표 JSON: {json_path}")
@@ -348,8 +538,10 @@ def extract_coords(
         print(f"  주의: {missing_count}개 프레임에서 객체를 찾지 못했습니다.")
     else:
         print(f"  전체 {len(frames_data)}프레임 좌표 추출 성공")
-    print(f"  scale 변동폭: {scale_range:.1f}%  "
-          f"({'키프레임 생성' if scale_range >= 5.0 else '변동 미미 → 키프레임 생략'} 예정)")
+    print(f"  scale 변동폭:    {scale_range:.1f}%  "
+          f"({'키프레임 생성' if scale_range >= 5.0 else '생략'} 예정)")
+    print(f"  rotation 변동폭: {rot_range:.1f}°  "
+          f"({'키프레임 생성' if rot_range >= 1.0 else '생략'} 예정)")
 
 
 if __name__ == "__main__":

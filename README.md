@@ -72,6 +72,21 @@ venv/bin/python src/json_to_jsx.py output/video_coords.json
 2. `File → Scripts → Run Script File → <이름>.jsx` 선택
 3. null object에 키프레임 자동 적용 완료
 
+## 알려진 한계
+
+### 회전 추출
+
+- **2D 평면(Z축) 회전만 지원**: `cv2.minAreaRect` 기반으로 객체의 2D 바운딩 박스 각도를 추적한다.
+- **3D 회전 미지원**: 객체가 X축·Y축으로 회전(예: 카드가 뒤집히거나 공이 자전)하는 경우,  
+  2D 실루엣의 각도는 변하지 않아 올바른 값을 추출할 수 없다.  
+  이 경우 rotation 값은 0° 또는 의미 없는 소수치로 나타나며 키프레임이 생략된다.  
+  → 3D 회전 지원은 P3 로드맵(광학 흐름 또는 3D 모션 추적)에서 다룰 예정.
+
+### 색상 기반 추적
+
+- 배경과 객체의 색상 대비가 충분해야 한다. 유사 색상 배경에서는 감지 정확도가 낮아질 수 있다.
+- 복잡한 배경의 경우 SAM 등 AI segmentation 모델 도입(P2) 이후 개선 예정.
+
 ## 보안 안내
 
 `input/`과 `output/`은 `.gitignore`로 제외되어 있습니다.

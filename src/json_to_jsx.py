@@ -17,6 +17,9 @@ from typing import List
 # scale 변동폭이 이 값(%) 이상이면 Scale 키프레임을 생성한다
 SCALE_KEYFRAME_THRESHOLD = 5.0
 
+# rotation 변동폭이 이 값(°) 이상이면 Rotation 키프레임을 생성한다
+ROTATION_KEYFRAME_THRESHOLD = 1.0
+
 
 def load_coords(json_path: Path) -> dict:
     """좌표 JSON 파일을 읽어 딕셔너리로 반환한다."""
@@ -58,6 +61,35 @@ def build_scale_js_array(frames: List[dict], fps: float) -> str:
     return "[\n" + ",\n".join(lines) + "\n]"
 
 
+def build_rotation_js_array(frames: List[dict], fps: float) -> str:
+    """
+    프레임 데이터를 Rotation 키프레임용 JavaScript 배열 리터럴로 변환한다.
+
+    rotation이 None인 프레임은 건너뛴다.
+    """
+    lines = []
+    for item in frames:
+        if item.get("rotation") is None:
+            continue
+        time_sec = item["frame"] / fps
+        lines.append(
+            f"  {{frame: {item['frame']}, time: {time_sec:.6f}, rotation: {item['rotation']}}}"
+        )
+    return "[\n" + ",\n".join(lines) + "\n]"
+
+
+def should_add_rotation_keyframes(frames: List[dict]) -> bool:
+    """
+    rotation 변동폭이 임계값(1°) 이상인지 확인한다.
+
+    원형 객체는 rotation이 모두 0이므로 자동으로 생략된다.
+    """
+    rotations = [f["rotation"] for f in frames if f.get("rotation") is not None]
+    if len(rotations) < 2:
+        return False
+    return (max(rotations) - min(rotations)) >= ROTATION_KEYFRAME_THRESHOLD
+
+
 def should_add_scale_keyframes(frames: List[dict]) -> bool:
     """
     scale 변동폭이 임계값(5%) 이상인지 확인한다.
@@ -88,14 +120,25 @@ def build_jsx_script(data: dict) -> str:
 
     valid_count = sum(1 for f in frames if f["x"] is not None)
     add_scale = should_add_scale_keyframes(frames)
+    add_rotation = should_add_rotation_keyframes(frames)
 
     position_js = build_position_js_array(frames, fps)
 
     # Scale 관련 변수 계산
     scales = [f["scale"] for f in frames if f.get("scale") is not None]
     scale_range = (max(scales) - min(scales)) if scales else 0.0
-    scale_note = f"Position + Scale ({scale_range:.1f}% 변동)" if add_scale \
-        else f"Position only (scale 변동 {scale_range:.1f}% < 5%, 생략)"
+
+    # Rotation 관련 변수 계산
+    rotations = [f["rotation"] for f in frames if f.get("rotation") is not None]
+    rot_range = (max(rotations) - min(rotations)) if rotations else 0.0
+
+    # 헤더 주석용 적용 속성 목록
+    props = ["Position"]
+    if add_scale:
+        props.append(f"Scale ({scale_range:.1f}% 변동)")
+    if add_rotation:
+        props.append(f"Rotation ({rot_range:.1f}° 변동)")
+    prop_note = " + ".join(props)
 
     # Scale JSX 섹션 (조건부 삽입)
     if add_scale:
@@ -125,12 +168,40 @@ def build_jsx_script(data: dict) -> str:
         scale_block = ""
         alert_scale_line = '""+'
 
+    # Rotation JSX 섹션 (조건부 삽입)
+    if add_rotation:
+        rotation_js = build_rotation_js_array(frames, fps)
+        n_rotation = sum(1 for f in frames if f.get("rotation") is not None)
+        rotation_block = f"""\
+
+    // ── Rotation 키프레임 데이터 ({rot_range:.1f}° 변동) ────────────
+    var rotationKeyframes = {rotation_js};
+
+    // ── Rotation 키프레임 적용 ───────────────────────────────
+    var rotProp = nullLayer.property("Rotation");
+    for (var r = 0; r < rotationKeyframes.length; r++) {{
+        var rkf = rotationKeyframes[r];
+        rotProp.setValueAtTime(rkf.time, rkf.rotation);
+    }}
+    for (var rk = 1; rk <= rotProp.numKeys; rk++) {{
+        rotProp.setInterpolationTypeAtKey(
+            rk,
+            KeyframeInterpolationType.LINEAR,
+            KeyframeInterpolationType.LINEAR
+        );
+    }}
+"""
+        alert_rotation_line = f'"Rotation: {n_rotation}개\\\\n" +'
+    else:
+        rotation_block = ""
+        alert_rotation_line = '""+'
+
     jsx = f"""\
 // ============================================================
 // 이 스크립트는 모션그래픽 추출기로 자동 생성됨
 // 원본 영상: {video_name}
 // 영상 해상도: {width}x{height}  /  FPS: {fps}
-// 유효 키프레임: {valid_count}개  /  적용 속성: {scale_note}
+// 유효 키프레임: {valid_count}개  /  적용 속성: {prop_note}
 //
 // 사용법:
 //   AE → File → Scripts → Run Script File → 이 파일 선택
@@ -177,7 +248,7 @@ def build_jsx_script(data: dict) -> str:
             KeyframeInterpolationType.LINEAR
         );
     }}
-{scale_block}
+{scale_block}{rotation_block}
     app.endUndoGroup();
 
     // ── 완료 알림 ────────────────────────────────────────────
@@ -186,6 +257,7 @@ def build_jsx_script(data: dict) -> str:
         "레이어: {layer_name}\\n" +
         "Position: " + keyframes.length + "개\\n" +
         {alert_scale_line}
+        {alert_rotation_line}
         "\\n※ 컴포지션 프레임 레이트가 {fps}fps인지 확인하세요."
     );
 }})();
@@ -212,8 +284,11 @@ def convert(json_path: Path) -> None:
         print(f"  경고: {total - valid}개 프레임은 좌표가 없어 키프레임에서 제외됩니다.")
 
     add_scale = should_add_scale_keyframes(frames)
+    add_rotation = should_add_rotation_keyframes(frames)
     scales = [f["scale"] for f in frames if f.get("scale") is not None]
     scale_range = (max(scales) - min(scales)) if scales else 0.0
+    rotations_list = [f["rotation"] for f in frames if f.get("rotation") is not None]
+    rot_range = (max(rotations_list) - min(rotations_list)) if rotations_list else 0.0
 
     jsx_code = build_jsx_script(data)
 
@@ -225,9 +300,14 @@ def convert(json_path: Path) -> None:
     print(f"  Position 키프레임: {valid}개")
     if add_scale:
         n_scale = sum(1 for f in frames if f.get("scale") is not None)
-        print(f"  Scale 키프레임: {n_scale}개  (변동폭 {scale_range:.1f}%)")
+        print(f"  Scale 키프레임:    {n_scale}개  (변동폭 {scale_range:.1f}%)")
     else:
-        print(f"  Scale 키프레임: 생략  (변동폭 {scale_range:.1f}% < 5%)")
+        print(f"  Scale 키프레임:    생략  (변동폭 {scale_range:.1f}% < 5%)")
+    if add_rotation:
+        n_rot = sum(1 for f in frames if f.get("rotation") is not None)
+        print(f"  Rotation 키프레임: {n_rot}개  (변동폭 {rot_range:.1f}°)")
+    else:
+        print(f"  Rotation 키프레임: 생략  (변동폭 {rot_range:.1f}° < 1°)")
     print(f"\nAE 사용법:")
     print(f"  File → Scripts → Run Script File → {jsx_path.name} 선택")
 
