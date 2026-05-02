@@ -21,14 +21,17 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
     echo ""
-    echo "사용법: ./run.sh input/[파일명].mp4"
+    echo "사용법: ./run.sh input/[파일명].mp4 [옵션]"
     echo ""
     echo "예시:"
-    echo "  ./run.sh input/test_ball.mp4"
+    echo "  ./run.sh input/video.mp4                # 자동 색상 감지"
+    echo "  ./run.sh input/video.mp4 --color blue   # 색상 수동 지정"
+    echo "  ./run.sh input/video.mp4 --no-auto      # 자동 감지 끄기 (기본: 빨강)"
     echo ""
     echo "동작 순서:"
-    echo "  1. 빨간색 객체 좌표 추출  →  output/<이름>_coords.json"
-    echo "  2. AE 키프레임 스크립트 생성  →  output/<이름>.jsx"
+    echo "  1. 객체 색상 자동 감지 (또는 수동 지정)"
+    echo "  2. 좌표 추출  →  output/<이름>_coords.json"
+    echo "  3. AE 키프레임 스크립트 생성  →  output/<이름>.jsx"
     echo ""
 }
 
@@ -37,8 +40,9 @@ if [[ $# -eq 0 ]]; then
     exit 0
 fi
 
-# ── 입력 파일 확인 ─────────────────────────────────────────────────
+# ── 입력 파일 및 추가 옵션 분리 ───────────────────────────────────
 INPUT_FILE="$1"
+EXTRA_ARGS=("${@:2}")  # --color, --no-auto 등 나머지 옵션
 
 if [[ ! -f "$INPUT_FILE" ]]; then
     fail "파일을 찾을 수 없습니다: $INPUT_FILE"
@@ -69,7 +73,7 @@ echo ""
 
 # ── Step 2: 좌표 추출 ──────────────────────────────────────────────
 info "[2/3] 객체 좌표 추출 시작..."
-if ! "$VENV_PYTHON" "${SCRIPT_DIR}/src/extract_coords.py" "$INPUT_FILE"; then
+if ! "$VENV_PYTHON" "${SCRIPT_DIR}/src/extract_coords.py" "$INPUT_FILE" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}; then
     fail "좌표 추출 실패. 위 오류 메시지를 확인해주세요."
 fi
 
