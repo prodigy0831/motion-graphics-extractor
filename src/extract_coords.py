@@ -1,7 +1,7 @@
 """
 객체 좌표 추출 스크립트
 
-영상에서 지정한 색상 객체의 중심 좌표를 프레임별로 추출해 JSON으로 저장한다.
+영상에서 지정한 색상 객체의 중심 좌표·크기를 프레임별로 추출해 JSON으로 저장한다.
 색상을 지정하지 않으면 detect_color.py가 자동으로 감지한다.
 
 사용법:
@@ -27,8 +27,13 @@ MARKER_COLOR = (0, 255, 0)  # BGR — 녹색
 MARKER_SIZE = 20
 MARKER_THICKNESS = 2
 
+# connected component 최소 면적 (노이즈 제거용)
+MIN_COMPONENT_AREA = 20
+
+# scale 이동평균 윈도우 크기
+SCALE_SMOOTH_WINDOW = 5
+
 # 수동 지정용 색 이름 → HSV 범위 매핑 테이블
-# 빨강(red)은 H 0-10과 170-180 두 구간을 사용하므로 detect_object_by_hsv에서 별도 처리
 COLOR_HSV_MAP: Dict[str, Tuple[List[int], List[int]]] = {
     "red":    ([0,   120,  70], [10,  255, 255]),
     "orange": ([10,  120,  70], [22,  255, 255]),
@@ -40,9 +45,10 @@ COLOR_HSV_MAP: Dict[str, Tuple[List[int], List[int]]] = {
     "pink":   ([155,  80,  70], [170, 255, 255]),
 }
 
-# 기본 색상 (--no-auto 옵션 시 사용)
 DEFAULT_COLOR = "red"
 
+
+# ── 영상 입출력 ───────────────────────────────────────────────────
 
 def open_video(video_path: Path) -> cv2.VideoCapture:
     """영상 파일을 열고 VideoCapture 객체를 반환한다."""
@@ -63,6 +69,8 @@ def get_video_info(cap: cv2.VideoCapture) -> dict:
     }
 
 
+# ── 객체 검출 ────────────────────────────────────────────────────
+
 def detect_object_by_hsv(
     frame_bgr: np.ndarray,
     hsv_lower: np.ndarray,
@@ -73,13 +81,11 @@ def detect_object_by_hsv(
     BGR 프레임에서 HSV 범위에 해당하는 픽셀을 찾아 이진 마스크를 반환한다.
 
     color_name이 "red"이면 H 170-180° 보조 범위를 자동으로 추가한다.
-    빨강은 HSV에서 0°와 360° 양쪽에 걸쳐 있기 때문이다.
     """
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, hsv_lower, hsv_upper)
 
     if color_name == "red":
-        # 빨강 보조 범위: S·V는 주 범위와 동일하게 유지
         lower2 = np.array([170, hsv_lower[1], hsv_lower[2]])
         upper2 = np.array([180, hsv_upper[1], hsv_upper[2]])
         mask = cv2.bitwise_or(mask, cv2.inRange(hsv, lower2, upper2))
@@ -87,20 +93,80 @@ def detect_object_by_hsv(
     return mask
 
 
-def calc_centroid(mask: np.ndarray) -> Optional[Tuple[int, int]]:
+def find_largest_component(
+    mask: np.ndarray,
+) -> Optional[Tuple[int, int, int, int, int]]:
     """
-    이진 마스크에서 객체의 중심점(centroid)을 계산한다.
+    이진 마스크에서 가장 큰 connected component를 찾아
+    (중심x, 중심y, bounding_width, bounding_height, pixel_area)를 반환한다.
 
-    모멘트(moment)를 이용해 무게중심을 구한다.
-    마스크가 비어있으면 None을 반환한다.
+    connected components 방식은 moments 방식보다 노이즈에 강하다.
+    여러 개의 작은 반점이 있어도 가장 큰 덩어리만 추적한다.
+    면적이 MIN_COMPONENT_AREA 미만이면 None 반환.
     """
-    M = cv2.moments(mask)
-    if M["m00"] == 0:
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
+        mask, connectivity=8
+    )
+    if num_labels <= 1:
+        return None  # 배경만 존재
+
+    # label 0은 배경이므로 제외하고 면적 기준으로 가장 큰 컴포넌트 선택
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    largest_idx = int(np.argmax(areas)) + 1  # +1: 배경 인덱스 보정
+
+    area = int(stats[largest_idx, cv2.CC_STAT_AREA])
+    if area < MIN_COMPONENT_AREA:
         return None
-    cx = int(M["m10"] / M["m00"])
-    cy = int(M["m01"] / M["m00"])
-    return cx, cy
 
+    cx = int(round(centroids[largest_idx][0]))
+    cy = int(round(centroids[largest_idx][1]))
+    w = int(stats[largest_idx, cv2.CC_STAT_WIDTH])
+    h = int(stats[largest_idx, cv2.CC_STAT_HEIGHT])
+    return cx, cy, w, h, area
+
+
+# ── scale 계산 ────────────────────────────────────────────────────
+
+def smooth_values(
+    values: List[Optional[float]],
+    window: int = SCALE_SMOOTH_WINDOW,
+) -> List[Optional[float]]:
+    """
+    None이 섞인 수열에 중심 이동평균을 적용한다.
+
+    None(미검출) 위치는 결과도 None으로 유지하며,
+    이동평균 계산 시 None 이웃은 제외하고 유효값만 평균한다.
+    """
+    result: List[Optional[float]] = []
+    half = window // 2
+    for i, val in enumerate(values):
+        if val is None:
+            result.append(None)
+            continue
+        start = max(0, i - half)
+        end = min(len(values), i + half + 1)
+        neighbors = [values[j] for j in range(start, end) if values[j] is not None]
+        result.append(sum(neighbors) / len(neighbors))
+    return result
+
+
+def calc_scales(smoothed_widths: List[Optional[float]]) -> List[Optional[float]]:
+    """
+    첫 유효 프레임의 width를 100%로 삼아 각 프레임의 scale(%)을 계산한다.
+
+    기준 width가 0이거나 유효값이 없으면 전부 None 반환.
+    """
+    baseline = next((w for w in smoothed_widths if w is not None), None)
+    if not baseline:
+        return [None] * len(smoothed_widths)
+
+    return [
+        round((w / baseline) * 100.0, 1) if w is not None else None
+        for w in smoothed_widths
+    ]
+
+
+# ── 시각화 ───────────────────────────────────────────────────────
 
 def draw_cross_marker(frame: np.ndarray, x: int, y: int) -> np.ndarray:
     """프레임 위에 녹색 십자(+) 마커를 그려 반환한다."""
@@ -110,6 +176,8 @@ def draw_cross_marker(frame: np.ndarray, x: int, y: int) -> np.ndarray:
              MARKER_COLOR, MARKER_THICKNESS, cv2.LINE_AA)
     return frame
 
+
+# ── JSON 저장 ─────────────────────────────────────────────────────
 
 def save_coords_json(
     output_path: Path,
@@ -131,6 +199,8 @@ def save_coords_json(
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+# ── 색상 결정 ─────────────────────────────────────────────────────
+
 def resolve_hsv(
     video_path: Path,
     color_arg: Optional[str],
@@ -139,12 +209,8 @@ def resolve_hsv(
     """
     색상 옵션에 따라 HSV 범위와 색 이름을 결정한다.
 
-    우선순위:
-        1. --color 수동 지정
-        2. 자동 감지 (기본)
-        3. --no-auto → 기본값(빨강) 사용
+    우선순위: 수동 지정(--color) > 자동 감지 > 기본값(--no-auto)
     """
-    # ── 수동 지정 ──────────────────────────────────────────────────
     if color_arg:
         color_name = color_arg.lower()
         if color_name not in COLOR_HSV_MAP:
@@ -155,33 +221,32 @@ def resolve_hsv(
         print(f"🎨 수동 지정 색상: {color_name} (HSV {lo[0]}-{hi[0]}/{lo[1]}-{hi[1]}/{lo[2]}-{hi[2]})")
         return np.array(lo), np.array(hi), color_name
 
-    # ── --no-auto: 기본값(빨강) ────────────────────────────────────
     if no_auto:
         lo, hi = COLOR_HSV_MAP[DEFAULT_COLOR]
         print(f"🎨 자동 감지 꺼짐. 기본 색상 사용: {DEFAULT_COLOR}")
         return np.array(lo), np.array(hi), DEFAULT_COLOR
 
-    # ── 자동 감지 ──────────────────────────────────────────────────
     try:
-        from detect_color import detect_object_color, COLOR_NAME_KO
+        from detect_color import detect_object_color
     except ImportError:
-        print("경고: detect_color 모듈을 불러올 수 없습니다. 기본 빨강으로 진행합니다.")
+        print("경고: detect_color 모듈 로드 실패. 기본 빨강으로 진행합니다.")
         lo, hi = COLOR_HSV_MAP[DEFAULT_COLOR]
         return np.array(lo), np.array(hi), DEFAULT_COLOR
 
     result = detect_object_color(str(video_path))
     color_name = result["color_name"]
-    color_ko   = result["color_name_ko"]
     confidence = result["confidence"]
     lo = result["hsv_lower"]
     hi = result["hsv_upper"]
 
-    print(f"🎨 감지된 객체 색: {color_ko} (confidence {confidence:.2f})")
+    print(f"🎨 감지된 객체 색: {result['color_name_ko']} (confidence {confidence:.2f})")
     if confidence < 0.5:
         print(f"⚠️  신뢰도가 낮습니다. --color 옵션으로 직접 지정 권장.")
 
     return np.array(lo), np.array(hi), color_name
 
+
+# ── 메인 추출 함수 ────────────────────────────────────────────────
 
 def extract_coords(
     video_path: Path,
@@ -190,7 +255,13 @@ def extract_coords(
     color_name: str,
 ) -> None:
     """
-    영상에서 지정 색상 객체의 좌표를 추출하고 JSON과 디버그 영상을 저장한다.
+    영상에서 지정 색상 객체의 좌표·크기를 추출하고 JSON과 디버그 영상을 저장한다.
+
+    처리 흐름:
+        1. 프레임별 객체 검출 (connected components) + 디버그 영상 작성
+        2. bounding box width에 이동평균 적용 (노이즈 완화)
+        3. scale 계산 (첫 유효 프레임 기준 %)
+        4. JSON 저장
     """
     stem = video_path.stem
     json_path = OUTPUT_DIR / f"{stem}_coords.json"
@@ -198,10 +269,7 @@ def extract_coords(
 
     cap = open_video(video_path)
     info = get_video_info(cap)
-
-    width = info["width"]
-    height = info["height"]
-    fps = info["fps"]
+    width, height, fps = info["width"], info["height"], info["fps"]
     total_frames = info["total_frames"]
 
     print(f"추출 시작: {video_path.name}")
@@ -211,8 +279,8 @@ def extract_coords(
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     writer = cv2.VideoWriter(str(debug_path), fourcc, fps, (width, height))
 
-    frames_data: List[dict] = []
-    missing_count = 0
+    # 1단계: 프레임별 원시 검출 결과 수집 + 디버그 영상 작성
+    raw_results: List[Optional[Tuple[int, int, int, int, int]]] = []
 
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
@@ -224,23 +292,54 @@ def extract_coords(
             print(f"  프레임 {frame_idx + 1}/{total_frames} 처리 중...")
 
         mask = detect_object_by_hsv(frame, hsv_lower, hsv_upper, color_name)
-        centroid = calc_centroid(mask)
+        component = find_largest_component(mask)
 
-        if centroid is None:
-            print(f"  경고: 프레임 {frame_idx}에서 객체를 찾지 못했습니다. (x, y = null)")
-            frames_data.append({"frame": frame_idx, "x": None, "y": None})
-            missing_count += 1
-        else:
-            cx, cy = centroid
-            frames_data.append({"frame": frame_idx, "x": cx, "y": cy})
+        if component is not None:
+            cx, cy, _w, _h, _area = component
             draw_cross_marker(frame, cx, cy)
 
+        raw_results.append(component)
         writer.write(frame)
 
     cap.release()
     writer.release()
 
+    # 2단계: 면적 기반 유효 지름으로 scale 계산
+    # bounding box width는 anti-aliasing 경계 픽셀에 따라 흔들리므로
+    # √(area/π)×2 (면적 기반 유효 지름)를 사용해 노이즈를 줄인다
+    import math
+    raw_sizes: List[Optional[float]] = [
+        math.sqrt(r[4] / math.pi) * 2.0 if r is not None else None
+        for r in raw_results
+    ]
+    smoothed_sizes = smooth_values(raw_sizes)
+    scales = calc_scales(smoothed_sizes)
+
+    # 3단계: frames_data 조합
+    frames_data: List[dict] = []
+    missing_count = 0
+
+    for i, (component, scale) in enumerate(zip(raw_results, scales)):
+        if component is None:
+            if i < len(raw_results):  # 끊김 없이 순회한 프레임만 기록
+                print(f"  경고: 프레임 {i}에서 객체를 찾지 못했습니다. (x, y = null)")
+            frames_data.append({
+                "frame": i, "x": None, "y": None,
+                "width": None, "height": None, "scale": None,
+            })
+            missing_count += 1
+        else:
+            cx, cy, w, h, _area = component
+            frames_data.append({
+                "frame": i, "x": cx, "y": cy,
+                "width": w, "height": h, "scale": scale,
+            })
+
     save_coords_json(json_path, video_path.name, info, frames_data)
+
+    # 결과 출력
+    valid_scales = [s for s in scales if s is not None]
+    scale_range = (max(valid_scales) - min(valid_scales)) if valid_scales else 0.0
 
     print(f"\n완료!")
     print(f"  좌표 JSON: {json_path}")
@@ -249,11 +348,13 @@ def extract_coords(
         print(f"  주의: {missing_count}개 프레임에서 객체를 찾지 못했습니다.")
     else:
         print(f"  전체 {len(frames_data)}프레임 좌표 추출 성공")
+    print(f"  scale 변동폭: {scale_range:.1f}%  "
+          f"({'키프레임 생성' if scale_range >= 5.0 else '변동 미미 → 키프레임 생략'} 예정)")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="영상에서 객체 좌표를 추출해 JSON과 AE용 디버그 영상을 생성합니다."
+        description="영상에서 객체 좌표·크기를 추출해 JSON과 AE용 디버그 영상을 생성합니다."
     )
     parser.add_argument("video", help="입력 영상 경로 (예: input/video.mp4)")
     parser.add_argument(
