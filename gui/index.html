@@ -16,7 +16,7 @@
     <span class="app-version">v0.1.0</span>
   </header>
 
-  <!-- 메인: 드롭존 / 비디오 -->
+  <!-- 메인: 드롭존 / 비디오 / 결과 -->
   <main class="main-area">
 
     <!-- 드롭존 (영상 없을 때) -->
@@ -31,6 +31,40 @@
     <!-- 비디오 플레이어 (영상 있을 때) -->
     <div class="video-wrapper" id="videoWrapper" hidden>
       <video id="video" preload="metadata"></video>
+      <!-- 클릭 오버레이 캔버스: 영상 위에 마커 표시 -->
+      <canvas id="clickCanvas"></canvas>
+
+      <!-- 힌트 오버레이 -->
+      <div class="hint-overlay" id="hintOverlay" hidden>
+        <span class="hint-text" id="hintText"></span>
+      </div>
+    </div>
+
+    <!-- 결과 패널 (추출 완료 후) -->
+    <div class="result-panel" id="resultPanel" hidden>
+
+      <!-- 디버그 영상 미리보기 -->
+      <div class="result-preview">
+        <video id="debugVideo" class="debug-video" autoplay loop muted playsinline></video>
+      </div>
+
+      <!-- 통계 + 버튼 -->
+      <div class="result-info">
+        <div class="result-stats" id="resultStats">
+          <div class="stat-row"><span class="stat-label">프레임</span><span class="stat-value" id="statFrames">—</span></div>
+          <div class="stat-row"><span class="stat-label">해상도</span><span class="stat-value" id="statRes">—</span></div>
+          <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="statFps">—</span></div>
+          <div class="stat-row"><span class="stat-label">스케일 변화</span><span class="stat-value" id="statScale">—</span></div>
+          <div class="stat-row"><span class="stat-label">회전 변화</span><span class="stat-value" id="statRot">—</span></div>
+        </div>
+
+        <div class="result-actions">
+          <button class="action-btn primary-btn" id="downloadJsxBtn">AE 스크립트 저장</button>
+          <button class="action-btn" id="openFolderBtn">Finder에서 보기</button>
+          <button class="action-btn" id="newVideoBtn">새 영상 처리</button>
+        </div>
+      </div>
+
     </div>
 
   </main>
@@ -43,7 +77,7 @@
       <input type="range" id="seekbar" class="seekbar" min="0" max="1000" value="0" step="1" />
     </div>
 
-    <!-- 버튼 + 시간 + 정보 -->
+    <!-- 재생 컨트롤 행 -->
     <div class="controls-row">
 
       <div class="controls-left">
@@ -63,6 +97,34 @@
       </div>
 
     </div>
+
+    <!-- 추출 진행 행 -->
+    <div class="controls-row extract-row" id="extractRow" hidden>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progressFill"></div>
+      </div>
+      <span class="extract-status running" id="extractStatusRunning"></span>
+    </div>
+
+    <!-- 객체 선택 + 추출 행 -->
+    <div class="controls-row click-row" id="clickRow">
+
+      <div class="controls-left">
+        <button class="ctrl-btn select-btn" id="selectBtn" title="클릭 모드 토글">객체 선택</button>
+        <button class="ctrl-btn" id="clearBtn" title="마커 초기화">초기화</button>
+        <button class="ctrl-btn extract-btn" id="extractBtn" disabled title="SAM 2로 전체 추적">추출 시작</button>
+      </div>
+
+      <div class="controls-center">
+        <span class="click-coord" id="clickCoord">—</span>
+      </div>
+
+      <div class="controls-right">
+        <span class="extract-status" id="extractStatus"></span>
+      </div>
+
+    </div>
+
   </footer>
 
   <script src="renderer.js"></script>
