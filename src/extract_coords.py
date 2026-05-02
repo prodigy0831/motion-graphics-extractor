@@ -512,15 +512,23 @@ def extract_coords(
         if component is None:
             print(f"  경고: 프레임 {i}에서 객체를 찾지 못했습니다. (x, y = null)")
             frames_data.append({
-                "frame": i, "x": None, "y": None,
-                "width": None, "height": None, "scale": None, "rotation": None,
+                "frame": i,
+                "x": None, "y": None,
+                "x_norm": None, "y_norm": None,
+                "width": None, "height": None,
+                "width_norm": None, "height_norm": None,
+                "scale": None, "rotation": None,
             })
             missing_count += 1
         else:
             cx, cy, w, h, _area = component
             frames_data.append({
-                "frame": i, "x": cx, "y": cy,
-                "width": w, "height": h, "scale": scale, "rotation": rotation,
+                "frame": i,
+                "x": cx, "y": cy,
+                "x_norm": round(cx / width, 4), "y_norm": round(cy / height, 4),
+                "width": w, "height": h,
+                "width_norm": round(w / width, 4), "height_norm": round(h / height, 4),
+                "scale": scale, "rotation": rotation,
             })
 
     save_coords_json(json_path, video_path.name, info, frames_data)

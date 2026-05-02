@@ -1,5 +1,12 @@
 # Python 가상환경
 venv/
+venv_sam2/
+
+# 외부 라이브러리 (서브모듈 대신 .gitignore로 제외)
+external/
+
+# 모델 파일 (용량 큼)
+models/
 
 # 입력 영상 (클라이언트 자료 보안)
 input/*
