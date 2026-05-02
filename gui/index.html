@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' blob:; media-src 'self' blob: file:; style-src 'self'" />
+  <title>모션그래픽 추출기</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- 헤더 -->
+  <header class="app-header">
+    <span class="app-title">모션그래픽 추출기</span>
+    <span class="app-version">v0.1.0</span>
+  </header>
+
+  <!-- 메인: 드롭존 / 비디오 -->
+  <main class="main-area">
+
+    <!-- 드롭존 (영상 없을 때) -->
+    <div class="drop-zone" id="dropZone">
+      <div class="drop-content">
+        <div class="drop-icon">🎬</div>
+        <p class="drop-primary">영상을 여기에 드래그하거나 클릭해서 선택하세요</p>
+        <p class="drop-secondary">MP4 · MOV · WebM 지원</p>
+      </div>
+    </div>
+
+    <!-- 비디오 플레이어 (영상 있을 때) -->
+    <div class="video-wrapper" id="videoWrapper" hidden>
+      <video id="video" preload="metadata"></video>
+    </div>
+
+  </main>
+
+  <!-- 컨트롤 바 -->
+  <footer class="control-bar" id="controlBar">
+
+    <!-- 진행 바 -->
+    <div class="seekbar-row">
+      <input type="range" id="seekbar" class="seekbar" min="0" max="1000" value="0" step="1" />
+    </div>
+
+    <!-- 버튼 + 시간 + 정보 -->
+    <div class="controls-row">
+
+      <div class="controls-left">
+        <button class="ctrl-btn" id="frameBack" title="한 프레임 뒤로 (←)">◀</button>
+        <button class="ctrl-btn play-btn" id="playBtn" title="재생/정지 (스페이스)">▶</button>
+        <button class="ctrl-btn" id="frameForward" title="한 프레임 앞으로 (→)">▶▶</button>
+      </div>
+
+      <div class="controls-center">
+        <span class="time-display" id="timeDisplay">00:00:00</span>
+        <span class="time-sep">/</span>
+        <span class="time-display" id="durationDisplay">00:00:00</span>
+      </div>
+
+      <div class="controls-right">
+        <span class="meta-info" id="metaInfo">—</span>
+      </div>
+
+    </div>
+  </footer>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

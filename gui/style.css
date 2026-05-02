@@ -1,0 +1,244 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* hidden 속성 항상 보장 (class display 규칙이 덮어쓰지 못하게) */
+[hidden] { display: none !important; }
+
+:root {
+  --bg:        #1a1a1a;
+  --surface:   #242424;
+  --border:    #333;
+  --text:      #e0e0e0;
+  --muted:     #666;
+  --accent:    #4a9eff;
+  --header-h: 40px;
+  --ctrl-h:   72px;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+/* ── 헤더 ── */
+.app-header {
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;   /* 헤더를 창 드래그 영역으로 */
+}
+
+.app-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.app-version {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── 메인 영역 ── */
+.main-area {
+  position: absolute;
+  top: var(--header-h);
+  bottom: var(--ctrl-h);
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #111;
+}
+
+/* ── 드롭존 ── */
+.drop-zone {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--border);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(74, 158, 255, 0.04);
+}
+
+.drop-content {
+  text-align: center;
+  pointer-events: none;
+}
+
+.drop-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+  opacity: 0.5;
+}
+
+.drop-primary {
+  font-size: 15px;
+  color: #aaa;
+  margin-bottom: 8px;
+}
+
+.drop-secondary {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── 비디오 ── */
+.video-wrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+video {
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+/* ── 컨트롤 바 ── */
+.control-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: var(--ctrl-h);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px;
+}
+
+/* ── 진행 바 ── */
+.seekbar-row {
+  padding: 8px 0 0;
+}
+
+.seekbar {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+  outline: none;
+}
+
+.seekbar::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.seekbar:hover::-webkit-slider-thumb {
+  transform: scale(1.3);
+}
+
+/* 진행 채우기 (JS로 --progress 변수 업데이트) */
+.seekbar {
+  background: linear-gradient(
+    to right,
+    var(--accent) 0%,
+    var(--accent) var(--progress, 0%),
+    var(--border) var(--progress, 0%),
+    var(--border) 100%
+  );
+}
+
+/* ── 버튼 행 ── */
+.controls-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  padding: 0 4px;
+}
+
+.controls-left,
+.controls-center,
+.controls-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.controls-left  { min-width: 120px; }
+.controls-right { min-width: 180px; justify-content: flex-end; }
+
+/* ── 컨트롤 버튼 ── */
+.ctrl-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  width: 30px;
+  height: 28px;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.ctrl-btn:hover {
+  background: var(--border);
+  border-color: #555;
+}
+
+.play-btn {
+  width: 36px;
+  height: 28px;
+  font-size: 13px;
+  border-color: #555;
+}
+
+/* ── 시간 표시 ── */
+.time-display {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.time-sep {
+  color: var(--muted);
+  margin: 0 2px;
+}
+
+/* ── 메타 정보 ── */
+.meta-info {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

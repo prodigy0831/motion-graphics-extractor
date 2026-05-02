@@ -53,8 +53,11 @@ def generate_test_video() -> None:
 
     INPUT_DIR.mkdir(exist_ok=True)
 
-    # mp4 인코더 설정
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # H.264 코덱 (avc1) — Chromium/Electron에서 재생 가능
+    # avc1이 시스템에서 지원되지 않으면 H264로 폴백
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
+    if not cv2.VideoWriter(str(OUTPUT_VIDEO), fourcc, FPS, (WIDTH, HEIGHT)).isOpened():
+        fourcc = cv2.VideoWriter_fourcc(*"H264")
     writer = cv2.VideoWriter(str(OUTPUT_VIDEO), fourcc, FPS, (WIDTH, HEIGHT))
 
     if not writer.isOpened():

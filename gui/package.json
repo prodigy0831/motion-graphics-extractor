@@ -1,0 +1,16 @@
+{
+  "name": "motion-graphics-extractor-gui",
+  "version": "0.1.0",
+  "description": "AI 영상의 모션을 After Effects로 내보내는 GUI",
+  "main": "main.js",
+  "scripts": {
+    "start": "env -u ELECTRON_RUN_AS_NODE electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "electron": "^32.3.3"
+  }
+}

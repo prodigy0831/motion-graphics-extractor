@@ -72,6 +72,18 @@ venv/bin/python src/json_to_jsx.py output/video_coords.json
 2. `File → Scripts → Run Script File → <이름>.jsx` 선택
 3. null object에 키프레임 자동 적용 완료
 
+## GUI (개발 중)
+
+Electron 기반 데스크톱 GUI가 개발 중입니다.
+
+```bash
+cd gui
+npm install   # 최초 1회
+npm start
+```
+
+현재 상태: 기본 윈도우 (v0.1.0) — 파일 선택, 추출 실행 등 기능은 순차 추가 예정.
+
 ## 알려진 한계
 
 ### 회전 추출
