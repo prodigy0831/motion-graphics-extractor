@@ -362,7 +362,7 @@ video {
   align-items: center;
   justify-content: center;
   background: #000;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .debug-video {
@@ -372,14 +372,14 @@ video {
 }
 
 .result-info {
-  width: 220px;
+  width: 260px;
   flex-shrink: 0;
   background: var(--surface);
   border-left: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 16px 14px;
-  gap: 20px;
+  padding: 14px 12px;
+  gap: 14px;
   overflow-y: auto;
 }
 
@@ -441,4 +441,34 @@ video {
   background: var(--success);
   color: #fff;
   border-color: var(--success);
+}
+
+/* ── 시각화 섹션 ── */
+.viz-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.viz-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--muted);
+}
+
+.viz-canvas {
+  width: 100%;
+  display: block;
+  border-radius: 3px;
+  background: #0d0d0d;
+}
+
+.viz-empty {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  padding: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
 }

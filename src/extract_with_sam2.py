@@ -7,7 +7,7 @@ extract_coords.py와 동일한 JSON 구조로 저장한다.
 사용법:
     venv_sam2/bin/python src/extract_with_sam2.py \
         --video input/kling_test.mp4 \
-        --click-frame 0 \
+        --click-time 0.542 \
         --click-x 640 \
         --click-y 252
 """
@@ -179,18 +179,19 @@ def run(video_path: Path, click_frame: int, click_x: int, click_y: int):
     try:
         extract_frames(video_path, temp_dir, N)
 
-        raw_comp = [None] * N   # (cx,cy,w,h,area) or None
-        raw_rot  = [None] * N   # (angle, is_circular) or None
+        raw_comp  = [None] * N   # (cx,cy,w,h,area) or None
+        raw_rot   = [None] * N   # (angle, is_circular) or None
+        raw_masks = [None] * N   # bool (H,W) or None — debug 영상 오버레이용
 
         def process_mask(frame_idx, masks):
-            # masks는 텐서 또는 리스트일 수 있으므로 len() 체크
             if masks is None or len(masks) == 0:
                 return
             mb = (masks[0][0].cpu().numpy() > 0.5)
             comp = mask_to_component(mb)
             rot  = mask_to_rotation(mb) if comp else None
-            raw_comp[frame_idx] = comp
-            raw_rot[frame_idx]  = rot
+            raw_comp[frame_idx]  = comp
+            raw_rot[frame_idx]   = rot
+            raw_masks[frame_idx] = mb
 
         print("SAM 2 추적 시작...", flush=True)
         done = set()
@@ -284,11 +285,18 @@ def run(video_path: Path, click_frame: int, click_x: int, click_y: int):
         fourcc = cv2.VideoWriter_fourcc(*"H264")
         writer = cv2.VideoWriter(str(debug_path), fourcc, fps, (W, H))
     cap = cv2.VideoCapture(str(video_path))
-    for fd in frames_data:
+    for i, fd in enumerate(frames_data):
         ret, frame = cap.read()
         if not ret:
             break
         if fd["x"] is not None:
+            # 빨강 반투명 마스크 오버레이
+            mb = raw_masks[i]
+            if mb is not None and mb.any():
+                overlay = frame.copy()
+                overlay[mb] = (0, 0, 255)   # BGR: 빨강
+                cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
+            # 중심점 십자 마커
             x, y = fd["x"], fd["y"]
             cv2.line(frame, (x-MARKER_SIZE, y), (x+MARKER_SIZE, y),
                      MARKER_COLOR, 2, cv2.LINE_AA)
@@ -310,14 +318,30 @@ def run(video_path: Path, click_frame: int, click_x: int, click_y: int):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SAM 2 기반 객체 좌표 추출기")
-    parser.add_argument("--video",        required=True, help="입력 영상 경로")
-    parser.add_argument("--click-frame",  type=int, required=True, help="클릭한 프레임 번호")
+    parser.add_argument("--video",        required=True,       help="입력 영상 경로")
+    parser.add_argument("--click-time",   type=float,          help="클릭 시점 (초, 우선)")
+    parser.add_argument("--click-frame",  type=int,            help="클릭 프레임 번호 (--click-time 없을 때)")
     parser.add_argument("--click-x",      type=int, required=True, help="영상 원본 x 좌표")
     parser.add_argument("--click-y",      type=int, required=True, help="영상 원본 y 좌표")
     args = parser.parse_args()
 
+    if args.click_time is None and args.click_frame is None:
+        parser.error("--click-time 또는 --click-frame 중 하나는 필요합니다.")
+
     try:
-        run(Path(args.video), args.click_frame, args.click_x, args.click_y)
+        video_path = Path(args.video)
+
+        # click_frame 결정: --click-time 우선, 영상 fps 기반 환산
+        if args.click_time is not None:
+            cap  = cv2.VideoCapture(str(video_path))
+            real_fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            click_frame = int(round(args.click_time * real_fps))
+            print(f"클릭 시점 변환: time={args.click_time:.4f}s → frame={click_frame} (fps={real_fps:.1f})", flush=True)
+        else:
+            click_frame = args.click_frame
+
+        run(video_path, click_frame, args.click_x, args.click_y)
     except Exception as e:
         print(f"ERROR: {e}", flush=True)
         sys.exit(1)

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' blob:; media-src 'self' blob: file:; style-src 'self'" />
+        content="default-src 'self' blob: data:; media-src 'self' blob: file:; style-src 'self'" />
   <title>모션그래픽 추출기</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -45,12 +45,13 @@
 
       <!-- 디버그 영상 미리보기 -->
       <div class="result-preview">
-        <video id="debugVideo" class="debug-video" autoplay loop muted playsinline></video>
+        <video id="debugVideo" class="debug-video" autoplay muted playsinline controls></video>
       </div>
 
-      <!-- 통계 + 버튼 -->
+      <!-- 통계 + 시각화 + 버튼 -->
       <div class="result-info">
-        <div class="result-stats" id="resultStats">
+
+        <div class="result-stats">
           <div class="stat-row"><span class="stat-label">프레임</span><span class="stat-value" id="statFrames">—</span></div>
           <div class="stat-row"><span class="stat-label">해상도</span><span class="stat-value" id="statRes">—</span></div>
           <div class="stat-row"><span class="stat-label">FPS</span><span class="stat-value" id="statFps">—</span></div>
@@ -58,11 +59,32 @@
           <div class="stat-row"><span class="stat-label">회전 변화</span><span class="stat-value" id="statRot">—</span></div>
         </div>
 
+        <!-- 궤적 -->
+        <div class="viz-section">
+          <div class="viz-label">궤적</div>
+          <canvas id="trajCanvas" class="viz-canvas"></canvas>
+        </div>
+
+        <!-- 스케일 변화 -->
+        <div class="viz-section">
+          <div class="viz-label">스케일 변화</div>
+          <canvas id="scaleCanvas" class="viz-canvas"></canvas>
+          <p class="viz-empty" id="scaleEmpty" hidden>변화 거의 없음</p>
+        </div>
+
+        <!-- 회전 변화 -->
+        <div class="viz-section">
+          <div class="viz-label">회전 변화</div>
+          <canvas id="rotCanvas" class="viz-canvas"></canvas>
+          <p class="viz-empty" id="rotEmpty" hidden>변화 거의 없음</p>
+        </div>
+
         <div class="result-actions">
           <button class="action-btn primary-btn" id="downloadJsxBtn">AE 스크립트 저장</button>
           <button class="action-btn" id="openFolderBtn">Finder에서 보기</button>
           <button class="action-btn" id="newVideoBtn">새 영상 처리</button>
         </div>
+
       </div>
 
     </div>

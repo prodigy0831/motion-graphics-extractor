@@ -1,12 +1,13 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const { spawn } = require('child_process')
-const { copyFileSync } = require('fs')
+const { copyFileSync, readFileSync } = require('fs')
 const path = require('path')
 
-const ROOT_DIR    = path.join(__dirname, '..')
-const VENV_SAM2   = path.join(ROOT_DIR, 'venv_sam2', 'bin', 'python')
-const SAM2_SCRIPT = path.join(ROOT_DIR, 'src', 'extract_with_sam2.py')
-const OUTPUT_DIR  = path.join(ROOT_DIR, 'output')
+const ROOT_DIR       = path.join(__dirname, '..')
+const VENV_SAM2      = path.join(ROOT_DIR, 'venv_sam2', 'bin', 'python')
+const SAM2_SCRIPT    = path.join(ROOT_DIR, 'src', 'extract_with_sam2.py')
+const PREVIEW_SCRIPT = path.join(ROOT_DIR, 'src', 'preview_mask.py')
+const OUTPUT_DIR     = path.join(ROOT_DIR, 'output')
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -35,12 +36,12 @@ ipcMain.handle('dialog:openFile', async () => {
 })
 
 // ── SAM 2 추출 실행 ────────────────────────────────────────────
-ipcMain.handle('extract:sam2', async (event, { videoPath, frame, x, y }) => {
+ipcMain.handle('extract:sam2', async (event, { videoPath, time, x, y }) => {
   return new Promise((resolve, reject) => {
     const child = spawn(VENV_SAM2, [
       SAM2_SCRIPT,
       '--video',       videoPath,
-      '--click-frame', String(frame),
+      '--click-time',  String(time),
       '--click-x',     String(x),
       '--click-y',     String(y),
     ])
@@ -101,6 +102,56 @@ ipcMain.handle('save-jsx-as', async (event, { sourcePath }) => {
 // ── output 폴더 열기 ──────────────────────────────────────────
 ipcMain.handle('open-output-folder', async () => {
   await shell.openPath(OUTPUT_DIR)
+})
+
+// ── 좌표 JSON 로드 ────────────────────────────────────────────
+ipcMain.handle('load-coords-json', async (event, { filePath }) => {
+  return JSON.parse(readFileSync(filePath, 'utf8'))
+})
+
+// ── 마스크 프리뷰 (단일 프레임, image predictor) ──────────────
+ipcMain.handle('preview-mask', async (event, { videoPath, time, x, y }) => {
+  return new Promise((resolve, reject) => {
+    const child = spawn(VENV_SAM2, [
+      PREVIEW_SCRIPT,
+      '--video',      videoPath,
+      '--click-time', String(time),
+      '--click-x',    String(x),
+      '--click-y',    String(y),
+    ])
+
+    let buffer     = ''
+    let stderrText = ''
+    let maskPath   = null
+
+    child.stdout.on('data', (data) => {
+      buffer += data.toString()
+      const lines = buffer.split('\n')
+      buffer = lines.pop()
+      for (const line of lines) {
+        const l = line.trim()
+        if (l.startsWith('MASK_READY:'))
+          maskPath = l.replace('MASK_READY:', '').trim()
+      }
+    })
+
+    child.stderr.on('data', (data) => { stderrText += data.toString() })
+
+    child.on('close', (code) => {
+      if (code === 0 && maskPath) {
+        try {
+          const dataUrl = 'data:image/png;base64,' + readFileSync(maskPath).toString('base64')
+          resolve({ dataUrl })
+        } catch (err) {
+          reject(new Error('PNG 읽기 실패: ' + err.message))
+        }
+      } else {
+        reject(new Error(`마스크 프리뷰 실패 (코드: ${code})\nSTDERR:\n${stderrText}`))
+      }
+    })
+
+    child.on('error', (err) => reject(new Error(err.message)))
+  })
 })
 
 // ── 앱 생명주기 ───────────────────────────────────────────────

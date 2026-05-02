@@ -27,4 +27,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // output 폴더 Finder에서 열기
   openOutputFolder: () => ipcRenderer.invoke('open-output-folder'),
+
+  // 좌표 JSON 로드
+  loadCoordsJson: (filePath) => ipcRenderer.invoke('load-coords-json', { filePath }),
+
+  // 마스크 프리뷰 (단일 프레임 image predictor)
+  previewMask: (params) => ipcRenderer.invoke('preview-mask', params),
 })

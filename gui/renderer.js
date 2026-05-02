@@ -32,14 +32,23 @@ const extractRow        = document.getElementById('extractRow')
 const clickRow          = document.getElementById('clickRow')
 const progressFill      = document.getElementById('progressFill')
 const extractStatusRunning = document.getElementById('extractStatusRunning')
+const trajCanvas        = document.getElementById('trajCanvas')
+const scaleCanvas       = document.getElementById('scaleCanvas')
+const scaleEmpty        = document.getElementById('scaleEmpty')
+const rotCanvas         = document.getElementById('rotCanvas')
+const rotEmpty          = document.getElementById('rotEmpty')
 
 let fps              = 30
 let clickMode        = false
 let currentVideoPath = null
-let lastOutputPath   = null   // 추출 완료 후 output 경로
+let lastOutputPath   = null
 
 // 클릭 데이터: frame, time, x, y (영상 원본 좌표), x_norm, y_norm
 let clickData = null
+
+// 마스크 프리뷰 상태
+let maskImage     = null  // 로드된 Image 객체
+let maskRequestId = 0     // 최신 요청 추적 (이전 요청 응답 무시용)
 
 // ── 시간 포맷 ──────────────────────────────────────────────────
 function formatTime(sec) {
@@ -241,7 +250,7 @@ function syncCanvas() {
   clickCanvas.width        = width
   clickCanvas.height       = height
 
-  if (clickData) redrawMarker()
+  if (clickData) redrawCanvas()
 }
 
 window.addEventListener('resize', syncCanvas)
@@ -268,9 +277,10 @@ selectBtn.addEventListener('click', () => {
 
 // ── 마커 초기화 ────────────────────────────────────────────────
 function clearClick() {
-  clickData = null
-  const ctx = clickCanvas.getContext('2d')
-  ctx.clearRect(0, 0, clickCanvas.width, clickCanvas.height)
+  clickData  = null
+  maskImage  = null
+  ++maskRequestId   // 진행 중인 프리뷰 요청 무효화
+  clickCanvas.getContext('2d').clearRect(0, 0, clickCanvas.width, clickCanvas.height)
   clickCoord.textContent = '—'
   extractBtn.disabled = true
 }
@@ -280,40 +290,85 @@ clearBtn.addEventListener('click', () => {
   hideHint()
 })
 
-// ── 마커 그리기 ────────────────────────────────────────────────
-function drawMarker(cx, cy) {
-  const ctx   = clickCanvas.getContext('2d')
+// ── 캔버스 전체 재렌더 (마스크 + 마커) ────────────────────────
+function redrawCanvas() {
+  const ctx = clickCanvas.getContext('2d')
+  ctx.clearRect(0, 0, clickCanvas.width, clickCanvas.height)
+
+  if (maskImage) {
+    ctx.drawImage(maskImage, 0, 0, clickCanvas.width, clickCanvas.height)
+  }
+
+  if (clickData) {
+    const cx = (clickData.x / video.videoWidth)  * clickCanvas.width
+    const cy = (clickData.y / video.videoHeight) * clickCanvas.height
+    _drawMarkerShape(ctx, cx, cy)
+  }
+}
+
+// ── 마커 도형 그리기 (clear 없이 현재 ctx 위에 그림) ──────────
+function _drawMarkerShape(ctx, cx, cy) {
   const SIZE  = 14
   const COLOR = '#ffeb3b'
 
-  ctx.clearRect(0, 0, clickCanvas.width, clickCanvas.height)
-
   ctx.save()
   ctx.strokeStyle = COLOR
-  ctx.lineWidth = 2
+  ctx.lineWidth   = 2
   ctx.shadowColor = 'rgba(0, 0, 0, 0.9)'
   ctx.shadowBlur  = 6
 
-  ctx.beginPath()
-  ctx.moveTo(cx - SIZE, cy)
-  ctx.lineTo(cx + SIZE, cy)
-  ctx.stroke()
-  ctx.beginPath()
-  ctx.moveTo(cx, cy - SIZE)
-  ctx.lineTo(cx, cy + SIZE)
-  ctx.stroke()
-
-  ctx.beginPath()
-  ctx.arc(cx, cy, 7, 0, Math.PI * 2)
-  ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx - SIZE, cy); ctx.lineTo(cx + SIZE, cy); ctx.stroke()
+  ctx.beginPath(); ctx.moveTo(cx, cy - SIZE); ctx.lineTo(cx, cy + SIZE); ctx.stroke()
+  ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.stroke()
   ctx.restore()
 }
 
-function redrawMarker() {
-  if (!clickData) return
-  const cx = (clickData.x / video.videoWidth)  * clickCanvas.width
-  const cy = (clickData.y / video.videoHeight) * clickCanvas.height
-  drawMarker(cx, cy)
+// ── 마스크 프리뷰 요청 ─────────────────────────────────────────
+// data: URL → blob URL 변환 (CSP data: 차단 우회)
+function dataUrlToBlob(dataUrl) {
+  const [header, b64] = dataUrl.split(',')
+  const mime  = header.match(/:(.*?);/)[1]
+  const bytes = atob(b64)
+  const arr   = new Uint8Array(bytes.length)
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i)
+  return new Blob([arr], { type: mime })
+}
+
+async function requestMaskPreview() {
+  if (!clickData || !currentVideoPath) return
+  const myId = ++maskRequestId
+
+  showHint('객체 인식 중...')
+  try {
+    const { dataUrl } = await window.electronAPI.previewMask({
+      videoPath: currentVideoPath,
+      time: clickData.time,
+      x:    clickData.x,
+      y:    clickData.y,
+    })
+    if (myId !== maskRequestId) return
+
+    // blob URL로 변환해서 로드 (CSP data: 차단 우회)
+    const blobUrl = URL.createObjectURL(dataUrlToBlob(dataUrl))
+    const img     = new Image()
+    img.onload = () => {
+      URL.revokeObjectURL(blobUrl)
+      if (myId !== maskRequestId) return
+      maskImage = img
+      redrawCanvas()
+      showHint('추출 시작 버튼을 눌러 SAM 2 추적을 시작하세요')
+    }
+    img.onerror = (e) => {
+      URL.revokeObjectURL(blobUrl)
+      console.error('마스크 이미지 로드 실패:', e)
+      showHint('추출 시작 버튼을 눌러 SAM 2 추적을 시작하세요')
+    }
+    img.src = blobUrl
+  } catch (err) {
+    if (myId !== maskRequestId) return
+    console.error('마스크 프리뷰 실패:', err)
+    showHint('추출 시작 버튼을 눌러 SAM 2 추적을 시작하세요')
+  }
 }
 
 // ── 캔버스 클릭 이벤트 ─────────────────────────────────────────
@@ -332,20 +387,191 @@ clickCanvas.addEventListener('click', e => {
   const x_norm = Math.round((x / video.videoWidth)  * 10000) / 10000
   const y_norm = Math.round((y / video.videoHeight) * 10000) / 10000
 
-  clickData = { frame, time, x, y, x_norm, y_norm }
+  clickData  = { frame, time, x, y, x_norm, y_norm }
+  maskImage  = null   // 이전 마스크 제거
 
-  drawMarker(cx, cy)
+  redrawCanvas()   // 마커 즉시 표시
   clickCoord.textContent = `클릭: (${x}, ${y})  [${x_norm}, ${y_norm}]  프레임 ${frame}`
 
   extractBtn.disabled = false
   setClickMode(false)
 
-  showHint('추출 시작 버튼을 눌러 SAM 2 추적을 시작하세요')
+  requestMaskPreview()   // 비동기로 마스크 요청
 })
+
+// ═══════════════════════════════════════════════════════════════
+// 시각화: 궤적 / 스케일 / 회전
+// ═══════════════════════════════════════════════════════════════
+
+// ── 궤적 캔버스 ────────────────────────────────────────────────
+function drawTrajectory(canvas, frames, vidW, vidH) {
+  const W   = canvas.width
+  const H   = canvas.height
+  const ctx = canvas.getContext('2d')
+
+  ctx.fillStyle = '#0d0d0d'
+  ctx.fillRect(0, 0, W, H)
+
+  // 격자
+  ctx.strokeStyle = '#1e1e1e'
+  ctx.lineWidth = 0.5
+  for (let i = 1; i < 4; i++) {
+    ctx.beginPath(); ctx.moveTo(W * i / 4, 0);   ctx.lineTo(W * i / 4, H);   ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(0, H * i / 4);   ctx.lineTo(W, H * i / 4);   ctx.stroke()
+  }
+
+  const valid = frames.filter(f => f.x !== null && f.x !== undefined)
+  if (valid.length < 2) {
+    ctx.fillStyle = '#444'
+    ctx.font = '11px -apple-system, sans-serif'
+    ctx.textAlign = 'center'
+    ctx.fillText('추적 데이터 없음', W / 2, H / 2)
+    return
+  }
+
+  const sx = W / vidW
+  const sy = H / vidH
+  const n  = valid.length
+
+  // 시간 그라데이션 경로 (초록 → 빨강)
+  for (let i = 1; i < n; i++) {
+    const t = i / (n - 1)
+    const r = Math.round(34  + (239 - 34)  * t)
+    const g = Math.round(197 + (68  - 197) * t)
+    const b = Math.round(94  + (68  - 94)  * t)
+    ctx.strokeStyle = `rgb(${r},${g},${b})`
+    ctx.lineWidth   = 1.5
+    ctx.lineJoin    = 'round'
+    ctx.beginPath()
+    ctx.moveTo(valid[i - 1].x * sx, valid[i - 1].y * sy)
+    ctx.lineTo(valid[i].x * sx,     valid[i].y * sy)
+    ctx.stroke()
+  }
+
+  // 시작 마커 (초록 ●)
+  ctx.fillStyle = '#22c55e'
+  ctx.beginPath()
+  ctx.arc(valid[0].x * sx, valid[0].y * sy, 4, 0, Math.PI * 2)
+  ctx.fill()
+
+  // 끝 마커 (빨강 ●)
+  ctx.fillStyle = '#ef4444'
+  ctx.beginPath()
+  ctx.arc(valid[n - 1].x * sx, valid[n - 1].y * sy, 4, 0, Math.PI * 2)
+  ctx.fill()
+}
+
+// ── 라인 차트 (스케일 / 회전) ──────────────────────────────────
+// 반환값: true = 그래프 그림, false = 변화 없음 (empty 메시지 표시 필요)
+function drawLineChart(canvas, frames, key, unit, minChange) {
+  const W   = canvas.width
+  const H   = canvas.height
+  const ctx = canvas.getContext('2d')
+  const PAD = { top: 14, right: 8, bottom: 20, left: 38 }
+
+  ctx.fillStyle = '#0d0d0d'
+  ctx.fillRect(0, 0, W, H)
+
+  const points = frames
+    .map((f, i) => ({ i, v: f[key] }))
+    .filter(p => p.v !== null && p.v !== undefined)
+
+  if (points.length < 2) return false
+
+  const vals  = points.map(p => p.v)
+  const range = Math.max(...vals) - Math.min(...vals)
+  if (range < minChange) return false
+
+  const cW   = W - PAD.left - PAD.right
+  const cH   = H - PAD.top  - PAD.bottom
+  const yPad = Math.max(range * 0.12, 0.5)
+  const yMin = Math.min(...vals) - yPad
+  const yMax = Math.max(...vals) + yPad
+  const yRng = yMax - yMin
+  const total = frames.length - 1
+
+  const toX = (fi) => PAD.left + (fi / total) * cW
+  const toY = (v)  => PAD.top  + (1 - (v - yMin) / yRng) * cH
+
+  // 격자 + Y 레이블
+  ctx.strokeStyle = '#2a2a2a'
+  ctx.lineWidth   = 0.5
+  ctx.font        = '9px -apple-system, sans-serif'
+  ctx.textAlign   = 'right'
+  for (let i = 0; i <= 3; i++) {
+    const gy  = PAD.top + (i / 3) * cH
+    const val = yMax - (i / 3) * yRng
+    ctx.beginPath(); ctx.moveTo(PAD.left, gy); ctx.lineTo(PAD.left + cW, gy); ctx.stroke()
+    ctx.fillStyle = '#555'
+    ctx.fillText(val.toFixed(1) + unit, PAD.left - 3, gy + 3)
+  }
+
+  // 라인
+  ctx.strokeStyle = '#4a9eff'
+  ctx.lineWidth   = 1.5
+  ctx.lineJoin    = 'round'
+  ctx.beginPath()
+  points.forEach((p, idx) => {
+    if (idx === 0) ctx.moveTo(toX(p.i), toY(p.v))
+    else           ctx.lineTo(toX(p.i), toY(p.v))
+  })
+  ctx.stroke()
+
+  return true
+}
+
+// ── 시각화 렌더링 ──────────────────────────────────────────────
+function renderVisualizations(data) {
+  const { frames, width: vidW, height: vidH } = data
+
+  // 캔버스 크기: 컨테이너 너비에 맞춤
+  const cw = trajCanvas.clientWidth || 220
+
+  // 궤적: 영상 비율 유지
+  trajCanvas.width  = cw
+  trajCanvas.height = Math.round(cw * vidH / vidW)
+  drawTrajectory(trajCanvas, frames, vidW, vidH)
+
+  // 스케일 차트
+  scaleCanvas.width  = cw
+  scaleCanvas.height = 90
+  const hasScale = drawLineChart(scaleCanvas, frames, 'scale', '%', 5)
+  scaleCanvas.hidden = !hasScale
+  scaleEmpty.hidden  = hasScale
+
+  // 회전 차트
+  rotCanvas.width  = cw
+  rotCanvas.height = 90
+  const hasRot = drawLineChart(rotCanvas, frames, 'rotation', '°', 1)
+  rotCanvas.hidden = !hasRot
+  rotEmpty.hidden  = hasRot
+}
+
+// ── 통계 업데이트 (JSON 데이터 기반) ──────────────────────────
+function updateStatsFromData(data) {
+  const { width, height, fps: dataFps, total_frames, frames } = data
+  statFrames.textContent = `${total_frames}f`
+  statRes.textContent    = `${width}×${height}`
+  statFps.textContent    = `${dataFps}`
+
+  const scaleVals = frames.map(f => f.scale).filter(v => v !== null && v !== undefined)
+  if (scaleVals.length > 0) {
+    const sMin = Math.min(...scaleVals)
+    const sMax = Math.max(...scaleVals)
+    statScale.textContent = `${sMin.toFixed(0)}% ~ ${sMax.toFixed(0)}%`
+  }
+
+  const rotVals = frames.map(f => f.rotation).filter(v => v !== null && v !== undefined)
+  if (rotVals.length > 0) {
+    const rMin = Math.min(...rotVals)
+    const rMax = Math.max(...rotVals)
+    statRot.textContent = `${rMin.toFixed(1)}° ~ ${rMax.toFixed(1)}°`
+  }
+}
 
 // ── 결과 패널 표시 ─────────────────────────────────────────────
 // outputPath: Python이 DONE: 으로 내보내는 _coords.json 절대경로
-function showResultPanel(outputPath) {
+async function showResultPanel(outputPath) {
   lastOutputPath = outputPath
 
   // _coords.json → _debug.mp4 / .jsx 파생
@@ -355,21 +581,28 @@ function showResultPanel(outputPath) {
   // 한글 경로 포함 file:// URL 안전 인코딩
   debugVideo.src = encodeURI('file://' + debugPath)
 
-  // 통계: video 메타에서 취득
-  const totalFrames = Math.round(video.duration * fps)
-  statFrames.textContent = `${totalFrames}f`
-  statRes.textContent    = `${video.videoWidth}×${video.videoHeight}`
-  statFps.textContent    = `${fps}`
-  statScale.textContent  = '—'
-  statRot.textContent    = '—'
-
   // JSX 다운로드 버튼에 경로 연결
   downloadJsxBtn._jsxPath = jsxPath
 
+  // 패널 먼저 표시 (clientWidth 측정을 위해 DOM 렌더 필요)
   videoWrapper.hidden = true
   resultPanel.hidden  = false
   clickRow.hidden     = false
   extractRow.hidden   = true
+
+  // JSON 로드 → 통계 + 시각화
+  try {
+    const data = await window.electronAPI.loadCoordsJson(outputPath)
+    updateStatsFromData(data)
+    renderVisualizations(data)
+  } catch (err) {
+    console.error('좌표 데이터 로드 실패:', err)
+    // JSON 로드 실패 시 video 메타 기반으로 기본 통계만 표시
+    const totalFrames = Math.round(video.duration * fps)
+    statFrames.textContent = `${totalFrames}f`
+    statRes.textContent    = `${video.videoWidth}×${video.videoHeight}`
+    statFps.textContent    = `${fps}`
+  }
 }
 
 // ── 결과 버튼 핸들러 ───────────────────────────────────────────
@@ -407,6 +640,14 @@ newVideoBtn.addEventListener('click', () => {
   updateSeekbarFill()
   setExtracting(false)
   hideHint()
+
+  // 캔버스 초기화
+  ;[trajCanvas, scaleCanvas, rotCanvas].forEach(c => {
+    c.getContext('2d').clearRect(0, 0, c.width, c.height)
+    c.hidden = false
+  })
+  scaleEmpty.hidden = true
+  rotEmpty.hidden   = true
 })
 
 // ── 추출 시작 ──────────────────────────────────────────────────
@@ -442,9 +683,9 @@ extractBtn.addEventListener('click', async () => {
   try {
     await window.electronAPI.extractWithSam2({
       videoPath: currentVideoPath,
-      frame: clickData.frame,
-      x:     clickData.x,
-      y:     clickData.y,
+      time: clickData.time,
+      x:    clickData.x,
+      y:    clickData.y,
     })
   } catch (err) {
     setExtracting(false)
