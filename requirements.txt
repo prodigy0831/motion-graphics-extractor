@@ -1,3 +1,14 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
+
+# 텍스트 모드 (extract_text.py) — venv_sam2에 설치
+# venv_sam2/bin/pip install pytesseract Pillow
+# 시스템: brew install tesseract tesseract-lang
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# AI 텍스트 출력 (generate_text_image.py) — venv_sam2에 설치
+# requests 는 이미 설치됨 (SAM 2 의존성)
+# openai SDK 는 더 이상 불필요 (requests 직접 호출로 대체)
+requests>=2.31.0

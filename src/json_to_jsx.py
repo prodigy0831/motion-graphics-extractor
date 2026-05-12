@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import List
 
+from simplify_path import simplify_motion_path
+
 
 # scale 변동폭이 이 값(%) 이상이면 Scale 키프레임을 생성한다
 SCALE_KEYFRAME_THRESHOLD = 5.0
@@ -40,6 +42,19 @@ def build_position_js_array(frames: List[dict], fps: float) -> str:
         time_sec = item["frame"] / fps
         lines.append(
             f"  {{frame: {item['frame']}, time: {time_sec:.6f}, x: {item['x']}, y: {item['y']}}}"
+        )
+    return "[\n" + ",\n".join(lines) + "\n]"
+
+
+def build_bezier_position_js_array(keyframes: List[dict]) -> str:
+    """단순화된 베지어 키프레임을 JavaScript 배열 리터럴로 변환한다."""
+    lines = []
+    for kf in keyframes:
+        lines.append(
+            f"  {{frame: {kf['frame']}, time: {kf['time']:.6f}, "
+            f"x: {kf['x']}, y: {kf['y']}, "
+            f"in_x: {kf['in_x']:.4f}, in_y: {kf['in_y']:.4f}, "
+            f"out_x: {kf['out_x']:.4f}, out_y: {kf['out_y']:.4f}}}"
         )
     return "[\n" + ",\n".join(lines) + "\n]"
 
@@ -103,11 +118,11 @@ def should_add_scale_keyframes(frames: List[dict]) -> bool:
     return (max(scales) - min(scales)) >= SCALE_KEYFRAME_THRESHOLD
 
 
-def build_jsx_script(data: dict) -> str:
+def build_jsx_script(data: dict, simplify_result: dict = None) -> str:
     """
     좌표·크기 데이터를 바탕으로 AE ExtendScript 전체 코드를 생성해 반환한다.
 
-    scale 변동폭이 5% 이상이면 Scale 키프레임 섹션이 포함된다.
+    simplify_result가 주어지면 Position을 베지어 단순화 키프레임으로 생성한다.
     """
     video_name: str = data["video"]
     fps: float = data["fps"]
@@ -122,8 +137,6 @@ def build_jsx_script(data: dict) -> str:
     add_scale = should_add_scale_keyframes(frames)
     add_rotation = should_add_rotation_keyframes(frames)
 
-    position_js = build_position_js_array(frames, fps)
-
     # Scale 관련 변수 계산
     scales = [f["scale"] for f in frames if f.get("scale") is not None]
     scale_range = (max(scales) - min(scales)) if scales else 0.0
@@ -132,8 +145,51 @@ def build_jsx_script(data: dict) -> str:
     rotations = [f["rotation"] for f in frames if f.get("rotation") is not None]
     rot_range = (max(rotations) - min(rotations)) if rotations else 0.0
 
+    # Position 블록 — 베지어 단순화 or 선형 원본
+    if simplify_result is not None and simplify_result['simplified_count'] > 0:
+        simplified_count = simplify_result['simplified_count']
+        tolerance_px     = simplify_result['tolerance_px']
+        position_js      = build_bezier_position_js_array(simplify_result['keyframes'])
+        pos_data_comment = (
+            f"// ── 4. Position 키프레임 (베지어 단순화: {valid_count}→{simplified_count}개, "
+            f"허용 오차 {tolerance_px}px) ─────────────"
+        )
+        pos_apply_block = f"""\
+    // ── 5. Position 키프레임 적용 (베지어 보간) ──────────────
+    var position = nullLayer.property("Position");
+    for (var i = 0; i < keyframes.length; i++) {{
+        var kf = keyframes[i];
+        position.setValueAtTime(kf.time, [kf.x, kf.y]);
+    }}
+    for (var k = 1; k <= position.numKeys; k++) {{
+        position.setInterpolationTypeAtKey(
+            k, KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER
+        );
+        var kf = keyframes[k - 1];
+        position.setSpatialTangentsAtKey(k, [kf.in_x, kf.in_y, 0], [kf.out_x, kf.out_y, 0]);
+    }}"""
+        kf_count_display = simplified_count
+        pos_note = f"Position (베지어 {simplified_count}개, 원본 {valid_count}개)"
+    else:
+        position_js      = build_position_js_array(frames, fps)
+        pos_data_comment = "// ── 4. Position 키프레임 데이터 ─────────────────────────"
+        pos_apply_block  = f"""\
+    // ── 5. Position 키프레임 적용 ───────────────────────────
+    var position = nullLayer.property("Position");
+    for (var i = 0; i < keyframes.length; i++) {{
+        var kf = keyframes[i];
+        position.setValueAtTime(kf.time, [kf.x, kf.y]);
+    }}
+    for (var k = 1; k <= position.numKeys; k++) {{
+        position.setInterpolationTypeAtKey(
+            k, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR
+        );
+    }}"""
+        kf_count_display = valid_count
+        pos_note         = "Position"
+
     # 헤더 주석용 적용 속성 목록
-    props = ["Position"]
+    props = [pos_note]
     if add_scale:
         props.append(f"Scale ({scale_range:.1f}% 변동)")
     if add_rotation:
@@ -230,24 +286,12 @@ def build_jsx_script(data: dict) -> str:
     var nullLayer = comp.layers.addNull();
     nullLayer.name = "{layer_name}";
 
-    // ── 4. Position 키프레임 데이터 ─────────────────────────
+    {pos_data_comment}
     var keyframes = {position_js};
 
     app.beginUndoGroup("모션 키프레임 적용: {layer_name}");
 
-    // ── 5. Position 키프레임 적용 ───────────────────────────
-    var position = nullLayer.property("Position");
-    for (var i = 0; i < keyframes.length; i++) {{
-        var kf = keyframes[i];
-        position.setValueAtTime(kf.time, [kf.x, kf.y]);
-    }}
-    for (var k = 1; k <= position.numKeys; k++) {{
-        position.setInterpolationTypeAtKey(
-            k,
-            KeyframeInterpolationType.LINEAR,
-            KeyframeInterpolationType.LINEAR
-        );
-    }}
+    {pos_apply_block}
 {scale_block}{rotation_block}
     app.endUndoGroup();
 
@@ -255,7 +299,7 @@ def build_jsx_script(data: dict) -> str:
     alert(
         "키프레임 적용 완료!\\n" +
         "레이어: {layer_name}\\n" +
-        "Position: " + keyframes.length + "개\\n" +
+        "Position: " + {kf_count_display} + "개\\n" +
         {alert_scale_line}
         {alert_rotation_line}
         "\\n※ 컴포지션 프레임 레이트가 {fps}fps인지 확인하세요."
@@ -265,16 +309,16 @@ def build_jsx_script(data: dict) -> str:
     return jsx
 
 
-def convert(json_path: Path) -> None:
+def convert(json_path: Path, simplify: bool = False) -> None:
     """JSON 좌표 파일을 읽어 .jsx 파일로 변환한다."""
     jsx_path = json_path.with_name(json_path.stem.replace("_coords", "") + ".jsx")
 
     print(f"변환 시작: {json_path.name}")
 
-    data = load_coords(json_path)
+    data   = load_coords(json_path)
     frames = data["frames"]
-    total = len(frames)
-    valid = sum(1 for f in frames if f["x"] is not None)
+    total  = len(frames)
+    valid  = sum(1 for f in frames if f["x"] is not None)
 
     if valid == 0:
         print("오류: 유효한 좌표 데이터가 없습니다. 추출 결과를 확인해주세요.")
@@ -283,21 +327,31 @@ def convert(json_path: Path) -> None:
     if valid < total:
         print(f"  경고: {total - valid}개 프레임은 좌표가 없어 키프레임에서 제외됩니다.")
 
-    add_scale = should_add_scale_keyframes(frames)
+    add_scale    = should_add_scale_keyframes(frames)
     add_rotation = should_add_rotation_keyframes(frames)
-    scales = [f["scale"] for f in frames if f.get("scale") is not None]
-    scale_range = (max(scales) - min(scales)) if scales else 0.0
-    rotations_list = [f["rotation"] for f in frames if f.get("rotation") is not None]
-    rot_range = (max(rotations_list) - min(rotations_list)) if rotations_list else 0.0
+    scales       = [f["scale"]    for f in frames if f.get("scale")    is not None]
+    rotations_l  = [f["rotation"] for f in frames if f.get("rotation") is not None]
+    scale_range  = (max(scales)     - min(scales))     if scales     else 0.0
+    rot_range    = (max(rotations_l) - min(rotations_l)) if rotations_l else 0.0
 
-    jsx_code = build_jsx_script(data)
+    # 베지어 단순화는 --simplify 옵션 사용 시에만
+    simplify_result = simplify_motion_path(data) if simplify else None
+
+    jsx_code = build_jsx_script(data, simplify_result=simplify_result)
 
     with open(jsx_path, "w", encoding="utf-8") as f:
         f.write(jsx_code)
 
     print(f"\n완료!")
     print(f"  출력 파일: {jsx_path}")
-    print(f"  Position 키프레임: {valid}개")
+    if simplify and simplify_result:
+        orig = simplify_result['original_count']
+        simp = simplify_result['simplified_count']
+        tol  = simplify_result['tolerance_px']
+        print(f"  Position 키프레임: {orig}개 → {simp}개  "
+              f"(RDP {tol}px, {orig - simp}개 제거)")
+    else:
+        print(f"  Position 키프레임: {valid}개 (전체 프레임)")
     if add_scale:
         n_scale = sum(1 for f in frames if f.get("scale") is not None)
         print(f"  Scale 키프레임:    {n_scale}개  (변동폭 {scale_range:.1f}%)")
@@ -313,14 +367,16 @@ def convert(json_path: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("사용법: python src/json_to_jsx.py <좌표 JSON 경로>")
-        print("  예시: python src/json_to_jsx.py output/test_ball_coords.json")
-        sys.exit(1)
+    import argparse
+    parser = argparse.ArgumentParser(description="JSON 좌표 → AE .jsx 변환기")
+    parser.add_argument("json_path",     help="좌표 JSON 파일 경로")
+    parser.add_argument("--simplify", action="store_true",
+                        help="RDP 베지어 단순화 활성화 (기본: 전체 프레임 선형)")
+    args = parser.parse_args()
 
-    json_path = Path(sys.argv[1])
+    json_path = Path(args.json_path)
     if not json_path.exists():
         print(f"오류: 파일을 찾을 수 없습니다 → {json_path}")
         sys.exit(1)
 
-    convert(json_path)
+    convert(json_path, simplify=args.simplify)
