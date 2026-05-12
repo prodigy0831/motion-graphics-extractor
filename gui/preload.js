@@ -33,4 +33,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 마스크 프리뷰 (단일 프레임 image predictor)
   previewMask: (params) => ipcRenderer.invoke('preview-mask', params),
+
+  // 텍스트 추출 실행
+  extractText: (params) => ipcRenderer.invoke('extract:text', params),
+
+  // AI 텍스트 이미지 생성
+  generateAiText: (params) => ipcRenderer.invoke('generate-ai-text', params),
+
+  // AI PNG + JSON → 통합 AE .jsx 생성
+  buildFinalJsx: (params) => ipcRenderer.invoke('build-final-jsx', params),
+
+  // 로컬 이미지 → data URL
+  readImageAsDataUrl: (filePath) => ipcRenderer.invoke('read-image-as-data-url', { filePath }),
+
+  // 범용 파일 다른 이름으로 저장
+  saveFileAs: (params) => ipcRenderer.invoke('save-file-as', params),
 })

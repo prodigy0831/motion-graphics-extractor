@@ -37,18 +37,55 @@ const scaleCanvas       = document.getElementById('scaleCanvas')
 const scaleEmpty        = document.getElementById('scaleEmpty')
 const rotCanvas         = document.getElementById('rotCanvas')
 const rotEmpty          = document.getElementById('rotEmpty')
+const opacityCanvas     = document.getElementById('opacityCanvas')
+const opacityEmpty      = document.getElementById('opacityEmpty')
+const opacityVizSection = document.getElementById('opacityVizSection')
+const textMetaCard      = document.getElementById('textMetaCard')
+const metaContent       = document.getElementById('metaContent')
+const metaColorSwatch   = document.getElementById('metaColorSwatch')
+const metaColor         = document.getElementById('metaColor')
+const metaSize          = document.getElementById('metaSize')
+const metaWeight        = document.getElementById('metaWeight')
+const metaCategory      = document.getElementById('metaCategory')
+const modeObject        = document.getElementById('modeObject')
+const modeText          = document.getElementById('modeText')
+// AI 텍스트 출력 패널
+const aiTextPanel       = document.getElementById('aiTextPanel')
+const aiBackBtn         = document.getElementById('aiBackBtn')
+const aiTextBtn         = document.getElementById('aiTextBtn')
+const referenceImage    = document.getElementById('referenceImage')
+const aiRefContent      = document.getElementById('aiRefContent')
+const newTextInput      = document.getElementById('newTextInput')
+const apiKeyInput       = document.getElementById('apiKeyInput')
+const generateAiBtn     = document.getElementById('generateAiBtn')
+const aiProgress        = document.getElementById('aiProgress')
+const aiProgressText    = document.getElementById('aiProgressText')
+const aiResultSection   = document.getElementById('aiResultSection')
+const generatedImage    = document.getElementById('generatedImage')
+const downloadAiBtn         = document.getElementById('downloadAiBtn')
+const downloadFinalJsxBtn   = document.getElementById('downloadFinalJsxBtn')
 
 let fps              = 30
 let clickMode        = false
 let currentVideoPath = null
 let lastOutputPath   = null
 
-// 클릭 데이터: frame, time, x, y (영상 원본 좌표), x_norm, y_norm
+// 모드: 'object' | 'text'
+let currentMode = 'object'
+
+// 사물 모드: 클릭 데이터 (frame, time, x, y, x_norm, y_norm)
 let clickData = null
 
+// 텍스트 모드: bbox 데이터 (time, x1, y1, x2, y2)
+let bboxData = null
+
+// 텍스트 모드: 드래그 상태
+let _bboxDragActive = false
+let _bboxDragStart  = null   // {x, y} 캔버스 좌표
+
 // 마스크 프리뷰 상태
-let maskImage     = null  // 로드된 Image 객체
-let maskRequestId = 0     // 최신 요청 추적 (이전 요청 응답 무시용)
+let maskImage     = null
+let maskRequestId = 0
 
 // ── 시간 포맷 ──────────────────────────────────────────────────
 function formatTime(sec) {
@@ -163,8 +200,8 @@ video.addEventListener('loadedmetadata', () => {
 
   syncCanvas()
 
-  // 영상 로드 직후 힌트: 객체 선택 유도
-  showHint('객체 선택 버튼을 누른 뒤 추적할 객체를 클릭하세요')
+  // 영상 로드 직후 힌트: 모드별 안내
+  _updateLoadHint()
 })
 
 // ── 재생 상태 업데이트 ─────────────────────────────────────────
@@ -250,7 +287,7 @@ function syncCanvas() {
   clickCanvas.width        = width
   clickCanvas.height       = height
 
-  if (clickData) redrawCanvas()
+  if (clickData || bboxData) redrawCanvas()
 }
 
 window.addEventListener('resize', syncCanvas)
@@ -264,7 +301,11 @@ function setClickMode(active) {
 
   if (active) {
     video.pause()
-    showHint('추적할 객체를 클릭하세요')
+    if (currentMode === 'text') {
+      showHint('텍스트 영역을 드래그로 지정하세요')
+    } else {
+      showHint('추적할 객체를 클릭하세요')
+    }
   } else {
     hideHint()
   }
@@ -275,11 +316,47 @@ selectBtn.addEventListener('click', () => {
   setClickMode(!clickMode)
 })
 
+// ── 모드 전환 ──────────────────────────────────────────────────
+function _updateLoadHint() {
+  if (currentMode === 'text') {
+    showHint('객체 선택 버튼을 누른 뒤 텍스트 영역을 드래그로 지정하세요')
+  } else {
+    showHint('객체 선택 버튼을 누른 뒤 추적할 객체를 클릭하세요')
+  }
+}
+
+function _applyModeUI() {
+  if (currentMode === 'text') {
+    selectBtn.textContent = '영역 선택'
+    selectBtn.title = '텍스트 영역 드래그 모드'
+  } else {
+    selectBtn.textContent = '객체 선택'
+    selectBtn.title = '클릭 모드 토글'
+  }
+}
+
+;[modeObject, modeText].forEach(radio => {
+  radio.addEventListener('change', () => {
+    if (!radio.checked) return
+    currentMode = radio.value
+    // 모드 전환 시 상태 초기화
+    setClickMode(false)
+    clearClick()
+    hideHint()
+    resultPanel.hidden = true
+    _applyModeUI()
+    if (video.src) _updateLoadHint()
+  })
+})
+
 // ── 마커 초기화 ────────────────────────────────────────────────
 function clearClick() {
   clickData  = null
+  bboxData   = null
   maskImage  = null
-  ++maskRequestId   // 진행 중인 프리뷰 요청 무효화
+  ++maskRequestId
+  _bboxDragActive = false
+  _bboxDragStart  = null
   clickCanvas.getContext('2d').clearRect(0, 0, clickCanvas.width, clickCanvas.height)
   clickCoord.textContent = '—'
   extractBtn.disabled = true
@@ -299,10 +376,12 @@ function redrawCanvas() {
     ctx.drawImage(maskImage, 0, 0, clickCanvas.width, clickCanvas.height)
   }
 
-  if (clickData) {
+  if (currentMode === 'object' && clickData) {
     const cx = (clickData.x / video.videoWidth)  * clickCanvas.width
     const cy = (clickData.y / video.videoHeight) * clickCanvas.height
     _drawMarkerShape(ctx, cx, cy)
+  } else if (currentMode === 'text' && bboxData) {
+    _drawBboxShape(ctx, bboxData, false)
   }
 }
 
@@ -320,6 +399,55 @@ function _drawMarkerShape(ctx, cx, cy) {
   ctx.beginPath(); ctx.moveTo(cx - SIZE, cy); ctx.lineTo(cx + SIZE, cy); ctx.stroke()
   ctx.beginPath(); ctx.moveTo(cx, cy - SIZE); ctx.lineTo(cx, cy + SIZE); ctx.stroke()
   ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.stroke()
+  ctx.restore()
+}
+
+// ── bbox 박스 시각화 ───────────────────────────────────────────
+function _drawBboxShape(ctx, bbox, isDragging) {
+  const cW = clickCanvas.width
+  const cH = clickCanvas.height
+  const { x1, y1, x2, y2 } = bbox
+
+  // 영상 원본 좌표 → 캔버스 좌표
+  const cx1 = (x1 / video.videoWidth)  * cW
+  const cy1 = (y1 / video.videoHeight) * cH
+  const cx2 = (x2 / video.videoWidth)  * cW
+  const cy2 = (y2 / video.videoHeight) * cH
+  const bw  = cx2 - cx1
+  const bh  = cy2 - cy1
+
+  ctx.save()
+  ctx.strokeStyle = '#ffdb00'
+  ctx.lineWidth   = 1.5
+
+  if (isDragging) {
+    ctx.setLineDash([5, 3])
+  } else {
+    ctx.setLineDash([])
+    ctx.fillStyle = 'rgba(255,220,0,0.12)'
+    ctx.fillRect(cx1, cy1, bw, bh)
+  }
+  ctx.strokeRect(cx1, cy1, bw, bh)
+  ctx.setLineDash([])
+
+  if (!isDragging) {
+    // 모서리 핸들
+    const HS = 4
+    ctx.fillStyle = '#ffdb00'
+    ;[[cx1, cy1], [cx2, cy1], [cx1, cy2], [cx2, cy2]].forEach(([hx, hy]) => {
+      ctx.fillRect(hx - HS, hy - HS, HS * 2, HS * 2)
+    })
+    // "TEXT REGION" 중앙 라벨
+    const mx = (cx1 + cx2) / 2
+    const my = (cy1 + cy2) / 2
+    ctx.font = '11px -apple-system, sans-serif'
+    ctx.textAlign = 'center'
+    const tw = ctx.measureText('TEXT REGION').width + 10
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'
+    ctx.fillRect(mx - tw / 2, my - 9, tw, 16)
+    ctx.fillStyle = '#fff'
+    ctx.fillText('TEXT REGION', mx, my + 4)
+  }
   ctx.restore()
 }
 
@@ -371,9 +499,77 @@ async function requestMaskPreview() {
   }
 }
 
-// ── 캔버스 클릭 이벤트 ─────────────────────────────────────────
+// ── 텍스트 모드: bbox 드래그 ──────────────────────────────────
+clickCanvas.addEventListener('mousedown', e => {
+  if (currentMode !== 'text' || !clickMode) return
+  e.preventDefault()
+  const rect = clickCanvas.getBoundingClientRect()
+  _bboxDragActive = true
+  _bboxDragStart  = { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  video.pause()
+})
+
+clickCanvas.addEventListener('mousemove', e => {
+  if (!_bboxDragActive || !_bboxDragStart) return
+  const rect = clickCanvas.getBoundingClientRect()
+  const ex = e.clientX - rect.left
+  const ey = e.clientY - rect.top
+
+  // 드래그 중 프리뷰 (캔버스 좌표 → 임시 bboxData용)
+  const x1c = Math.min(_bboxDragStart.x, ex)
+  const y1c = Math.min(_bboxDragStart.y, ey)
+  const x2c = Math.max(_bboxDragStart.x, ex)
+  const y2c = Math.max(_bboxDragStart.y, ey)
+
+  const ctx = clickCanvas.getContext('2d')
+  ctx.clearRect(0, 0, clickCanvas.width, clickCanvas.height)
+
+  // 임시 bbox를 영상 좌표로 변환해서 점선으로 그리기
+  const tmpBbox = {
+    x1: Math.round((x1c / clickCanvas.width)  * video.videoWidth),
+    y1: Math.round((y1c / clickCanvas.height) * video.videoHeight),
+    x2: Math.round((x2c / clickCanvas.width)  * video.videoWidth),
+    y2: Math.round((y2c / clickCanvas.height) * video.videoHeight),
+  }
+  _drawBboxShape(ctx, tmpBbox, true)
+})
+
+clickCanvas.addEventListener('mouseup', e => {
+  if (!_bboxDragActive || !_bboxDragStart) return
+  _bboxDragActive = false
+
+  const rect = clickCanvas.getBoundingClientRect()
+  const ex = e.clientX - rect.left
+  const ey = e.clientY - rect.top
+
+  const x1c = Math.min(_bboxDragStart.x, ex)
+  const y1c = Math.min(_bboxDragStart.y, ey)
+  const x2c = Math.max(_bboxDragStart.x, ex)
+  const y2c = Math.max(_bboxDragStart.y, ey)
+  _bboxDragStart = null
+
+  if (x2c - x1c < 10 || y2c - y1c < 10) {
+    redrawCanvas()
+    return
+  }
+
+  bboxData = {
+    time: Math.round(video.currentTime * 1000) / 1000,
+    x1: Math.round((x1c / clickCanvas.width)  * video.videoWidth),
+    y1: Math.round((y1c / clickCanvas.height) * video.videoHeight),
+    x2: Math.round((x2c / clickCanvas.width)  * video.videoWidth),
+    y2: Math.round((y2c / clickCanvas.height) * video.videoHeight),
+  }
+
+  redrawCanvas()
+  clickCoord.textContent = `박스: (${bboxData.x1},${bboxData.y1}) → (${bboxData.x2},${bboxData.y2})`
+  extractBtn.disabled = false
+  setClickMode(false)
+})
+
+// ── 사물 모드: 캔버스 클릭 이벤트 ────────────────────────────
 clickCanvas.addEventListener('click', e => {
-  if (!clickMode) return
+  if (currentMode !== 'object' || !clickMode) return
 
   const rect = clickCanvas.getBoundingClientRect()
   const cx   = e.clientX - rect.left
@@ -522,12 +718,15 @@ function drawLineChart(canvas, frames, key, unit, minChange) {
 
 // ── 시각화 렌더링 ──────────────────────────────────────────────
 function renderVisualizations(data) {
-  const { frames, width: vidW, height: vidH } = data
+  const isText = data.object_type === 'text'
+  const info   = data.video_info || data
+  const vidW   = info.width
+  const vidH   = info.height
+  const frames = data.frames
 
-  // 캔버스 크기: 컨테이너 너비에 맞춤
   const cw = trajCanvas.clientWidth || 220
 
-  // 궤적: 영상 비율 유지
+  // 궤적
   trajCanvas.width  = cw
   trajCanvas.height = Math.round(cw * vidH / vidW)
   drawTrajectory(trajCanvas, frames, vidW, vidH)
@@ -545,20 +744,34 @@ function renderVisualizations(data) {
   const hasRot = drawLineChart(rotCanvas, frames, 'rotation', '°', 1)
   rotCanvas.hidden = !hasRot
   rotEmpty.hidden  = hasRot
+
+  // Opacity 차트 (텍스트 모드 전용)
+  opacityVizSection.hidden = !isText
+  if (isText) {
+    opacityCanvas.width  = cw
+    opacityCanvas.height = 90
+    const hasOpacity = drawLineChart(opacityCanvas, frames, 'opacity', '', 0.05)
+    opacityCanvas.hidden = !hasOpacity
+    opacityEmpty.hidden  = hasOpacity
+  }
 }
 
 // ── 통계 업데이트 (JSON 데이터 기반) ──────────────────────────
 function updateStatsFromData(data) {
-  const { width, height, fps: dataFps, total_frames, frames } = data
-  statFrames.textContent = `${total_frames}f`
-  statRes.textContent    = `${width}×${height}`
-  statFps.textContent    = `${dataFps}`
+  // 텍스트 모드 JSON은 video_info 아래, 사물 모드는 최상위
+  const info   = data.video_info || data
+  const frames = data.frames
+  statFrames.textContent = `${info.total_frames}f`
+  statRes.textContent    = `${info.width}×${info.height}`
+  statFps.textContent    = `${info.fps}`
 
   const scaleVals = frames.map(f => f.scale).filter(v => v !== null && v !== undefined)
   if (scaleVals.length > 0) {
     const sMin = Math.min(...scaleVals)
     const sMax = Math.max(...scaleVals)
     statScale.textContent = `${sMin.toFixed(0)}% ~ ${sMax.toFixed(0)}%`
+  } else {
+    statScale.textContent = '—'
   }
 
   const rotVals = frames.map(f => f.rotation).filter(v => v !== null && v !== undefined)
@@ -566,42 +779,65 @@ function updateStatsFromData(data) {
     const rMin = Math.min(...rotVals)
     const rMax = Math.max(...rotVals)
     statRot.textContent = `${rMin.toFixed(1)}° ~ ${rMax.toFixed(1)}°`
+  } else {
+    statRot.textContent = '—'
   }
 }
 
 // ── 결과 패널 표시 ─────────────────────────────────────────────
-// outputPath: Python이 DONE: 으로 내보내는 _coords.json 절대경로
+// outputPath: Python DONE: 이 내보내는 JSON 절대경로
 async function showResultPanel(outputPath) {
   lastOutputPath = outputPath
 
-  // _coords.json → _debug.mp4 / .jsx 파생
-  const debugPath = outputPath.replace('_coords.json', '_debug.mp4')
-  const jsxPath   = outputPath.replace('_coords.json', '.jsx')
+  const isTextResult = outputPath.includes('_text_coords.json')
 
-  // 한글 경로 포함 file:// URL 안전 인코딩
+  // 경로 파생
+  const debugPath = isTextResult
+    ? outputPath.replace('_text_coords.json', '_text_debug.mp4')
+    : outputPath.replace('_coords.json', '_debug.mp4')
+  const jsxPath = isTextResult
+    ? outputPath.replace('_text_coords.json', '_text.jsx')
+    : outputPath.replace('_coords.json', '.jsx')
+
   debugVideo.src = encodeURI('file://' + debugPath)
-
-  // JSX 다운로드 버튼에 경로 연결
   downloadJsxBtn._jsxPath = jsxPath
+  downloadJsxBtn.hidden   = false
 
-  // 패널 먼저 표시 (clientWidth 측정을 위해 DOM 렌더 필요)
   videoWrapper.hidden = true
   resultPanel.hidden  = false
   clickRow.hidden     = false
   extractRow.hidden   = true
 
-  // JSON 로드 → 통계 + 시각화
   try {
     const data = await window.electronAPI.loadCoordsJson(outputPath)
     updateStatsFromData(data)
     renderVisualizations(data)
+    _updateTextMetaCard(data)
   } catch (err) {
     console.error('좌표 데이터 로드 실패:', err)
-    // JSON 로드 실패 시 video 메타 기반으로 기본 통계만 표시
     const totalFrames = Math.round(video.duration * fps)
     statFrames.textContent = `${totalFrames}f`
     statRes.textContent    = `${video.videoWidth}×${video.videoHeight}`
     statFps.textContent    = `${fps}`
+  }
+}
+
+// ── 텍스트 메타 카드 업데이트 ──────────────────────────────────
+function _updateTextMetaCard(data) {
+  const isText = data.object_type === 'text'
+  textMetaCard.hidden = !isText
+  aiTextBtn.hidden    = !isText
+  if (!isText) return
+
+  const m = data.text_metadata || {}
+  metaContent.textContent  = m.content  || '—'
+  metaColor.textContent    = m.color    || '—'
+  metaSize.textContent     = m.size_px  ? `${m.size_px}px` : '—'
+  metaWeight.textContent   = m.weight   || '—'
+  metaCategory.textContent = m.category || '—'
+
+  if (m.color && /^#[0-9A-Fa-f]{6}$/.test(m.color)) {
+    metaColorSwatch.style.background = m.color
   }
 }
 
@@ -642,17 +878,29 @@ newVideoBtn.addEventListener('click', () => {
   hideHint()
 
   // 캔버스 초기화
-  ;[trajCanvas, scaleCanvas, rotCanvas].forEach(c => {
+  ;[trajCanvas, scaleCanvas, rotCanvas, opacityCanvas].forEach(c => {
     c.getContext('2d').clearRect(0, 0, c.width, c.height)
     c.hidden = false
   })
-  scaleEmpty.hidden = true
-  rotEmpty.hidden   = true
+  scaleEmpty.hidden     = true
+  rotEmpty.hidden       = true
+  opacityEmpty.hidden   = true
+  opacityVizSection.hidden = true
+  textMetaCard.hidden   = true
+  downloadJsxBtn.hidden = false
+  aiTextBtn.hidden      = true
+  aiTextPanel.hidden    = true
+  aiResultSection.hidden = true
+  generatedImage.src    = ''
+  downloadFinalJsxBtn.disabled    = false
+  downloadFinalJsxBtn.textContent = 'AE 스크립트 다운로드 (PNG 임포트 자동)'
 })
 
 // ── 추출 시작 ──────────────────────────────────────────────────
 extractBtn.addEventListener('click', async () => {
-  if (!clickData || !currentVideoPath) return
+  if (!currentVideoPath) return
+  if (currentMode === 'object' && !clickData) return
+  if (currentMode === 'text'   && !bboxData)  return
 
   setExtracting(true)
   extractStatusRunning.textContent = '준비 중...'
@@ -681,15 +929,149 @@ extractBtn.addEventListener('click', async () => {
   })
 
   try {
-    await window.electronAPI.extractWithSam2({
-      videoPath: currentVideoPath,
-      time: clickData.time,
-      x:    clickData.x,
-      y:    clickData.y,
-    })
+    if (currentMode === 'object') {
+      await window.electronAPI.extractWithSam2({
+        videoPath: currentVideoPath,
+        time: clickData.time,
+        x:    clickData.x,
+        y:    clickData.y,
+      })
+    } else {
+      await window.electronAPI.extractText({
+        videoPath: currentVideoPath,
+        time: bboxData.time,
+        x1:   bboxData.x1,
+        y1:   bboxData.y1,
+        x2:   bboxData.x2,
+        y2:   bboxData.y2,
+      })
+    }
   } catch (err) {
     setExtracting(false)
     extractStatus.textContent = `오류: ${err.message.slice(0, 60)}`
     extractStatus.className   = 'extract-status error'
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════
+// AI 텍스트 출력 패널 (2뎁스)
+// ═══════════════════════════════════════════════════════════════
+
+// ── 패널 진입 ──────────────────────────────────────────────────
+aiTextBtn.addEventListener('click', async () => {
+  if (!lastOutputPath) return
+
+  // 참조 이미지 로드 (IPC 경유, data: URI)
+  const maskedPath = lastOutputPath.replace('_text_coords.json', '_text_masked.png')
+  try {
+    const dataUrl = await window.electronAPI.readImageAsDataUrl(maskedPath)
+    referenceImage.src = dataUrl
+  } catch {
+    referenceImage.src = ''
+  }
+
+  // 인식된 텍스트 표시
+  aiRefContent.textContent = metaContent.textContent || '—'
+
+  // 저장된 API 키 자동 로드
+  const savedKey = localStorage.getItem('openai_api_key')
+  if (savedKey) apiKeyInput.value = savedKey
+
+  resultPanel.hidden = true
+  aiTextPanel.hidden = false
+})
+
+// ── 패널 뒤로가기 ──────────────────────────────────────────────
+aiBackBtn.addEventListener('click', () => {
+  aiTextPanel.hidden = true
+  resultPanel.hidden = false
+})
+
+// ── 이미지 생성 ───────────────────────────────────────────────
+generateAiBtn.addEventListener('click', async () => {
+  const newText = newTextInput.value.trim()
+  if (!newText) { alert('새 텍스트를 입력해주세요'); return }
+
+  const apiKey = apiKeyInput.value.trim()
+  if (!apiKey.startsWith('sk-') || apiKey.length < 20) {
+    alert('유효한 OpenAI API 키를 입력해주세요 (sk-로 시작)')
+    return
+  }
+
+  // API 키 로컬 저장
+  localStorage.setItem('openai_api_key', apiKey)
+
+  const maskedPath = lastOutputPath.replace('_text_coords.json', '_text_masked.png')
+  const outputPath = lastOutputPath.replace('_text_coords.json', '_generated_text.png')
+
+  generateAiBtn.disabled  = true
+  aiProgress.hidden       = false
+  aiResultSection.hidden  = true
+  aiProgressText.textContent = 'OpenAI API 호출 중... (10~30초 소요)'
+
+  try {
+    const { dataUrl, outputPath: genPath } = await window.electronAPI.generateAiText({
+      referenceImagePath: maskedPath,
+      newText,
+      apiKey,
+      outputPath,
+    })
+    generatedImage.src       = dataUrl
+    downloadAiBtn._srcPath   = genPath
+    aiResultSection.hidden   = false
+  } catch (err) {
+    alert('이미지 생성 실패:\n' + err.message.slice(0, 200))
+  } finally {
+    generateAiBtn.disabled = false
+    aiProgress.hidden      = true
+  }
+})
+
+// ── AE 통합 .jsx 다운로드 ─────────────────────────────────────
+downloadFinalJsxBtn.addEventListener('click', async () => {
+  const aiPngPath = downloadAiBtn._srcPath
+  if (!aiPngPath || !lastOutputPath) return
+
+  const outputJsxPath = lastOutputPath.replace('_text_coords.json', '_final.jsx')
+
+  downloadFinalJsxBtn.disabled    = true
+  downloadFinalJsxBtn.textContent = '.jsx 생성 중...'
+
+  try {
+    const { jsxPath } = await window.electronAPI.buildFinalJsx({
+      jsonPath:     lastOutputPath,
+      aiPngPath,
+      outputJsxPath,
+    })
+    const saved = await window.electronAPI.saveJsxAs(jsxPath)
+    if (saved) {
+      downloadFinalJsxBtn.textContent = '저장 완료 ✓'
+      setTimeout(() => {
+        downloadFinalJsxBtn.textContent = 'AE 스크립트 다운로드 (PNG 임포트 자동)'
+      }, 2000)
+    } else {
+      downloadFinalJsxBtn.textContent = 'AE 스크립트 다운로드 (PNG 임포트 자동)'
+    }
+  } catch (err) {
+    alert('.jsx 생성 실패:\n' + err.message.slice(0, 200))
+    downloadFinalJsxBtn.textContent = 'AE 스크립트 다운로드 (PNG 임포트 자동)'
+  } finally {
+    downloadFinalJsxBtn.disabled = false
+  }
+})
+
+// ── PNG 다운로드 ───────────────────────────────────────────────
+downloadAiBtn.addEventListener('click', async () => {
+  const src = downloadAiBtn._srcPath
+  if (!src) return
+  const saved = await window.electronAPI.saveFileAs({
+    sourcePath: src,
+    title:      'AI 생성 이미지 저장',
+    filterName: 'PNG 이미지',
+    ext:        'png',
+  })
+  if (saved) {
+    downloadAiBtn.textContent = '저장 완료 ✓'
+    setTimeout(() => { downloadAiBtn.textContent = 'PNG 다운로드' }, 2000)
   }
 })

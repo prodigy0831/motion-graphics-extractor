@@ -79,8 +79,44 @@
           <p class="viz-empty" id="rotEmpty" hidden>변화 거의 없음</p>
         </div>
 
+        <!-- Opacity 변화 (텍스트 모드 전용) -->
+        <div class="viz-section" id="opacityVizSection" hidden>
+          <div class="viz-label">Opacity 변화</div>
+          <canvas id="opacityCanvas" class="viz-canvas"></canvas>
+          <p class="viz-empty" id="opacityEmpty" hidden>변화 거의 없음</p>
+        </div>
+
+        <!-- 텍스트 메타데이터 카드 (텍스트 모드 전용) -->
+        <div class="text-meta-card" id="textMetaCard" hidden>
+          <div class="viz-label" style="margin-bottom:4px">텍스트 메타데이터</div>
+          <div class="meta-row">
+            <span class="meta-label">인식된 텍스트</span>
+            <span class="meta-value" id="metaContent">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">색상</span>
+            <span class="meta-value">
+              <span class="color-swatch" id="metaColorSwatch"></span>
+              <span id="metaColor">—</span>
+            </span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">크기</span>
+            <span class="meta-value" id="metaSize">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">굵기</span>
+            <span class="meta-value" id="metaWeight">—</span>
+          </div>
+          <div class="meta-row">
+            <span class="meta-label">카테고리</span>
+            <span class="meta-value" id="metaCategory">—</span>
+          </div>
+        </div>
+
         <div class="result-actions">
           <button class="action-btn primary-btn" id="downloadJsxBtn">AE 스크립트 저장</button>
+          <button class="action-btn ai-text-btn" id="aiTextBtn" hidden>AI로 텍스트 출력하기</button>
           <button class="action-btn" id="openFolderBtn">Finder에서 보기</button>
           <button class="action-btn" id="newVideoBtn">새 영상 처리</button>
         </div>
@@ -89,10 +125,78 @@
 
     </div>
 
+    <!-- AI 텍스트 출력 패널 (2뎁스) -->
+    <div class="ai-text-panel" id="aiTextPanel" hidden>
+
+      <div class="ai-header">
+        <button class="back-btn" id="aiBackBtn">← 결과로 돌아가기</button>
+        <span class="ai-title">AI로 텍스트 출력하기</span>
+      </div>
+
+      <div class="ai-content">
+
+        <!-- 좌측: 참조 이미지 -->
+        <div class="ai-left">
+          <div class="viz-label">원본 텍스트 (참조 이미지)</div>
+          <div class="ai-preview-wrap">
+            <img id="referenceImage" class="ai-preview-img" alt="참조 이미지" />
+          </div>
+          <div class="ai-ref-meta">
+            인식된 텍스트: <span id="aiRefContent">—</span>
+          </div>
+        </div>
+
+        <!-- 우측: 생성 입력 + 결과 -->
+        <div class="ai-right">
+          <div class="viz-label">새 텍스트로 생성</div>
+
+          <input type="text" id="newTextInput" class="ai-input"
+                 placeholder="새 텍스트를 입력하세요" />
+
+          <div class="ai-apikey-row">
+            <label class="ai-label">OpenAI API 키</label>
+            <input type="password" id="apiKeyInput" class="ai-input"
+                   placeholder="sk-..." autocomplete="off" />
+            <span class="ai-hint">최초 1회 입력. 이 기기 로컬에만 저장됨</span>
+          </div>
+
+          <button class="action-btn primary-btn ai-generate-btn" id="generateAiBtn">이미지 생성</button>
+
+          <div class="ai-progress" id="aiProgress" hidden>
+            <span id="aiProgressText">OpenAI API 호출 중... (10~30초 소요)</span>
+          </div>
+
+          <div class="ai-result-section" id="aiResultSection" hidden>
+            <div class="viz-label" style="margin-top:12px">생성 결과 (알파채널 PNG)</div>
+            <div class="ai-preview-wrap ai-checkerboard">
+              <img id="generatedImage" class="ai-preview-img" alt="생성된 이미지" />
+            </div>
+            <button class="action-btn primary-btn" id="downloadAiBtn">PNG 다운로드</button>
+            <button class="action-btn ae-jsx-btn" id="downloadFinalJsxBtn">AE 스크립트 다운로드 (PNG 임포트 자동)</button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <!-- 컨트롤 바 -->
   <footer class="control-bar" id="controlBar">
+
+    <!-- 모드 선택 행 -->
+    <div class="controls-row mode-row">
+      <div class="mode-toggle">
+        <label class="mode-label">
+          <input type="radio" name="extractMode" value="object" id="modeObject" checked>
+          <span>사물</span>
+        </label>
+        <label class="mode-label">
+          <input type="radio" name="extractMode" value="text" id="modeText">
+          <span>텍스트</span>
+        </label>
+      </div>
+    </div>
 
     <!-- 진행 바 -->
     <div class="seekbar-row">
